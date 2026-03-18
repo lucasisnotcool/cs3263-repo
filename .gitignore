@@ -1,0 +1,4 @@
+# Local Kaggle dataset downloads
+data/raw/amazon-product-data/
+.venv/
+experiment_vectorisation/artifacts/

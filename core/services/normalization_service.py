@@ -2,15 +2,24 @@ import re
 from typing import Any, Dict, List, Optional
 
 from core.entities.candidate import Candidate
+from core.interfaces.feedback_client import FeedbackClient
 from core.interfaces.marketplace_client import MarketplaceClient
 from core.interfaces.normalizer import Normalizer
 from infrastructure.external_clients.ebay.ebay_url_parser import EbayUrlParser, ParsedEbayUrl
 
 
 class NormalizationService(Normalizer):
-    def __init__(self, marketplace_client: MarketplaceClient, url_parser: EbayUrlParser):
+    def __init__(
+        self,
+        marketplace_client: MarketplaceClient,
+        url_parser: EbayUrlParser,
+        feedback_client: FeedbackClient | None = None,
+        seller_feedback_limit: int = 10,
+    ):
         self.marketplace_client = marketplace_client
         self.url_parser = url_parser
+        self.feedback_client = feedback_client
+        self.seller_feedback_limit = seller_feedback_limit
 
     def normalize(self, url: str) -> Candidate:
         parsed_url = self.url_parser.parse(url)
@@ -65,6 +74,7 @@ class NormalizationService(Normalizer):
             shipping_options = []
 
         returns_info = item.get("returnTerms") or item.get("returns") or item.get("returnPolicy")
+        seller_id = seller.get("username") or seller.get("sellerId") or seller.get("userId")
 
         return Candidate(
             source_url=source_url,
@@ -77,14 +87,14 @@ class NormalizationService(Normalizer):
             shipping=shipping_options,
             returns=returns_info,
             condition=item.get("condition"),
-            seller_id=seller.get("username"),
+            seller_id=seller_id,
             seller_feedback_score=seller.get("feedbackScore"),
             seller_feedback_percentage=seller.get("feedbackPercentage"),
             detailed_seller_ratings=self._parse_detailed_seller_ratings(item),
             product_rating_count=review_count,
             product_rating_histogram=histogram,
             product_average_rating=avg_rating,
-            seller_feedback_texts=None,
+            seller_feedback_texts=self._fetch_seller_feedback_texts(seller_id),
             item_specifics=self._extract_item_specifics(item),
             product_family_key=self._build_product_family_key(item, parsed_url),
         )
@@ -124,6 +134,31 @@ class NormalizationService(Normalizer):
             histogram = self._safe_get(item, "product", "ratingHistograms")
 
         return review_count, histogram, avg_rating
+
+    def _fetch_seller_feedback_texts(self, seller_id: Optional[str]) -> Optional[List[str]]:
+        if not seller_id or self.feedback_client is None:
+            return None
+
+        feedback = self.feedback_client.get_feedback(
+            user_id=seller_id,
+            feedback_type="FEEDBACK_RECEIVED",
+            limit=max(25, self.seller_feedback_limit),
+            role="BUYER",
+        )
+
+        feedback_entries = feedback.get("feedbackEntries", [])
+        texts = []
+        for entry in feedback_entries:
+            comment_text = self._safe_get(entry, "feedbackComment", "commentText")
+            text_removed = self._safe_get(entry, "feedbackComment", "commentTextRemovedPerPolicy", default=False)
+
+            if comment_text and not text_removed:
+                texts.append(comment_text)
+
+        if not texts:
+            return None
+
+        return texts[: self.seller_feedback_limit]
 
     def _extract_product_id(self, item: Dict[str, Any], parsed_url: ParsedEbayUrl) -> Optional[str]:
         product = item.get("product", {})

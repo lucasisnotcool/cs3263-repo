@@ -1,4 +1,27 @@
-# Local Kaggle dataset downloads
-data/raw/amazon-product-data/
+# OS files
+.DS_Store
+
+# Python environments and caches
 .venv/
+venv/
+.deps/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Local and generated experiment artifacts
 */artifacts/
+*.log
+
+# Raw datasets
+data/raw/
+
+# Generated prepared datasets
+data/helpfulness/*.jsonl
+data/helpfulness/*.json
+!data/helpfulness/.gitkeep
+
+# Trained model artifacts
+models/**/*.joblib
+models/**/*.json

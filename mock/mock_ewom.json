@@ -1,0 +1,79 @@
+{
+  "field_name": "seller_feedback_texts",
+  "description": "Mock eWOM data focused on seller feedback text for sentiment or aggregation experiments.",
+  "cases": [
+    {
+      "case_id": "listing_feedback_positive_repeat_phrases",
+      "source_url": "https://www.ebay.com.sg/itm/206158794969?itmmeta=01KMF0940PYQKEP45AJ0BP7K4M&hash=item30000590d9:g:JnYAAeSwiEVpwANm",
+      "page_type": "listing",
+      "legacy_item_id": "206158794969",
+      "rest_item_id": "v1|206158794969|0",
+      "seller_id": "saharajeepn",
+      "seller_feedback_score": 523,
+      "seller_feedback_percentage": 100.0,
+      "seller_feedback_texts": [
+        "Good buyer, prompt payment, valued customer, highly recommended.",
+        "Fantastic buyer!! I appreciate your business.",
+        "Great communication. A pleasure to do business with.",
+        "Good buyer, prompt payment, valued customer, highly recommended.",
+        "Great Transaction",
+        "Great communication. A pleasure to do business with.",
+        "Thank you for an easy, pleasant transaction. Excellent buyer. A++++++.",
+        "Awesome buyer! Thank you so very much for your business :)",
+        "Good buyer, prompt payment, valued customer, highly recommended",
+        "Customer was very easy to work with, Great customer, Thanks for your purchase."
+      ]
+    },
+    {
+      "case_id": "product_page_feedback_positive_short_form",
+      "source_url": "https://www.ebay.com.sg/p/4062765295?iid=377055098797",
+      "page_type": "product_page",
+      "legacy_item_id": "377055098797",
+      "rest_item_id": "v1|377055098797|0",
+      "product_id": "4062765295",
+      "seller_id": "natmat-49",
+      "seller_feedback_score": 1396,
+      "seller_feedback_percentage": 99.8,
+      "seller_feedback_texts": [
+        "Quick response and fast payment. Perfect! THANKS!!",
+        "Thanks for your purchase - hope you enjoy!",
+        "Thanks for a pleasant transaction. Enjoy your eBay Branded Shipping Supplies!",
+        "Wonderful buyer and quick payment! Thank you!",
+        "I sincerely appreciate your support. It has been instrumental in helping me achieve a significant milestone. Thank you",
+        "Great communication. A pleasure to do business with.",
+        "Quick response and fast payment. Perfect! THANKS!!",
+        "Great communication. A pleasure to do business with.",
+        "Quick response and fast payment. Perfect! THANKS!!",
+        "Great communication. A pleasure to do business with."
+      ]
+    },
+    {
+      "case_id": "feedback_missing_edge_case",
+      "source_url": "https://www.ebay.com.sg/itm/mock-no-feedback",
+      "page_type": "listing",
+      "legacy_item_id": "000000000000",
+      "rest_item_id": "v1|000000000000|0",
+      "seller_id": "no-feedback-demo",
+      "seller_feedback_score": 12,
+      "seller_feedback_percentage": 97.5,
+      "seller_feedback_texts": null
+    },
+    {
+      "case_id": "listing_feedback_negative_complaints",
+      "source_url": "https://www.ebay.com.sg/itm/mock-negative-feedback",
+      "page_type": "listing",
+      "legacy_item_id": "999999999999",
+      "rest_item_id": "v1|999999999999|0",
+      "seller_id": "bad-feedback-demo",
+      "seller_feedback_score": 48,
+      "seller_feedback_percentage": 82.4,
+      "seller_feedback_texts": [
+        "Item arrived damaged and the seller never responded.",
+        "Very slow shipping and poor communication.",
+        "Received the wrong item. Refund process was frustrating.",
+        "Product was not as described and packaging was terrible.",
+        "Seller ignored my messages after delivery."
+      ]
+    }
+  ]
+}

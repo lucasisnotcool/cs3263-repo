@@ -11,6 +11,11 @@ It uses late fusion rather than feature-level fusion:
 This design fits the current repo because the two branches are already trained
 independently and already expose prediction probabilities.
 
+It now supports two levels of scoring:
+
+- review-level fusion for a single review
+- product-level aggregation for a whole set of review texts
+
 ## Inputs
 
 The fusion layer consumes:
@@ -95,6 +100,81 @@ Returned structure:
     "fusion": {...},
 }
 ```
+
+## Product-Level Aggregation
+
+When you have many reviews for the same product, use the review-set path instead
+of averaging raw sentiment alone.
+
+The aggregation stage does two things:
+
+- it weights each review by its review-level `helpfulness_gate`
+- it applies a second `review_set_gate` based on review volume
+
+Implemented rule:
+
+```text
+informative_review_weight = sum(helpfulness_gate_i)
+weighted_sentiment_polarity =
+    sum(helpfulness_gate_i * sentiment_polarity_i) / informative_review_weight
+review_set_gate = 1 - exp(-review_count / review_set_gate_scale)
+final_signed_score = review_set_gate * weighted_sentiment_polarity
+```
+
+This is a better fit for whole-product evaluation because:
+
+- unhelpful reviews contribute less
+- a larger review set gets a stronger final confidence gate
+- the final score becomes more confident when multiple informative reviews agree
+
+Example:
+
+```python
+from eWOM.api import score_review_set
+
+result = score_review_set(
+    [
+        "Battery life is excellent and setup was easy.",
+        "Sound quality is good but the case scratches easily.",
+        "Very disappointed. The left earbud stopped working after a week.",
+    ]
+)
+
+print(result["aggregate"]["final_ewom_score_0_to_100"])
+```
+
+Returned structure:
+
+```python
+{
+    "review_count": 3,
+    "reviews": [
+        {
+            "text": "...",
+            "helpfulness": {...},
+            "sentiment": {...},
+            "fusion": {...},
+        }
+    ],
+    "aggregate": {
+        "review_count": 3,
+        "review_set_gate": ...,
+        "final_ewom_score_0_to_100": ...,
+    },
+}
+```
+
+## Mock Demo
+
+The demo runner can now read seller feedback arrays from
+`mock/mock_ewom.json`:
+
+```bash
+python -m eWOM.run_fusion_demo --mock-case-id listing_feedback_negative_complaints
+```
+
+This loads the selected case's `seller_feedback_texts` array and runs the
+product-level aggregator.
 
 ## Tuning Guidance
 

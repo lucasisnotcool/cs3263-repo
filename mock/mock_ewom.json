@@ -74,6 +74,28 @@
         "Product was not as described and packaging was terrible.",
         "Seller ignored my messages after delivery."
       ]
+    },
+    {
+      "case_id": "listing_feedback_mixed_half_good_half_bad",
+      "source_url": "https://www.ebay.com.sg/itm/mock-mixed-feedback",
+      "page_type": "listing",
+      "legacy_item_id": "888888888888",
+      "rest_item_id": "v1|888888888888|0",
+      "seller_id": "mixed-feedback-demo",
+      "seller_feedback_score": 214,
+      "seller_feedback_percentage": 90.5,
+      "seller_feedback_texts": [
+        "Great communication and the item arrived quickly.",
+        "Product matched the description perfectly.",
+        "Fast shipping and careful packaging.",
+        "Seller was helpful and answered my questions promptly.",
+        "Smooth transaction, very satisfied with the purchase.",
+        "Item stopped working after two days.",
+        "Shipping was delayed and updates were unclear.",
+        "Received a scratched product that looked used.",
+        "Seller ignored my refund request.",
+        "Packaging was poor and the item arrived damaged."
+      ]
     }
   ]
 }

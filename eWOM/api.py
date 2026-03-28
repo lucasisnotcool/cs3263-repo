@@ -4,7 +4,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from eWOM.fusion import EWOMFusionConfig, EWOMFusionPredictor
 
@@ -37,6 +37,16 @@ EWOM_SCORE_REQUEST_SCHEMA: dict[str, Any] = {
             "description": "Whether the review is marked as a verified purchase.",
         },
     },
+}
+
+EWOM_REVIEW_SET_REQUEST_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "minItems": 1,
+    "items": {
+        "type": "string",
+        "minLength": 1,
+    },
+    "description": "Array of review texts used to compute a product-level eWOM score.",
 }
 
 EWOM_MODEL_PATHS_SCHEMA: dict[str, Any] = {
@@ -120,6 +130,64 @@ EWOM_SCORE_RESPONSE_SCHEMA: dict[str, Any] = {
     },
 }
 
+EWOM_REVIEW_SET_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["review_count", "reviews", "aggregate"],
+    "properties": {
+        "review_count": {"type": "integer", "minimum": 1},
+        "reviews": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["text", "helpfulness", "sentiment", "fusion"],
+                "properties": {
+                    "text": {"type": "string"},
+                    "helpfulness": EWOM_SCORE_RESPONSE_SCHEMA["properties"]["helpfulness"],
+                    "sentiment": EWOM_SCORE_RESPONSE_SCHEMA["properties"]["sentiment"],
+                    "fusion": EWOM_SCORE_RESPONSE_SCHEMA["properties"]["fusion"],
+                },
+            },
+        },
+        "aggregate": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "review_count",
+                "informative_review_weight",
+                "mean_usefulness_probability",
+                "mean_helpfulness_gate",
+                "weighted_positive_probability",
+                "weighted_negative_probability",
+                "weighted_sentiment_polarity",
+                "weighted_sentiment_strength",
+                "review_set_gate",
+                "final_signed_ewom_score",
+                "final_magnitude_ewom_score",
+                "final_ewom_score_0_to_100",
+                "final_ewom_magnitude_0_to_100",
+            ],
+            "properties": {
+                "review_count": {"type": "integer", "minimum": 1},
+                "informative_review_weight": {"type": "number"},
+                "mean_usefulness_probability": {"type": "number"},
+                "mean_helpfulness_gate": {"type": "number"},
+                "weighted_positive_probability": {"type": "number"},
+                "weighted_negative_probability": {"type": "number"},
+                "weighted_sentiment_polarity": {"type": "number"},
+                "weighted_sentiment_strength": {"type": "number"},
+                "review_set_gate": {"type": "number"},
+                "final_signed_ewom_score": {"type": "number"},
+                "final_magnitude_ewom_score": {"type": "number"},
+                "final_ewom_score_0_to_100": {"type": "number"},
+                "final_ewom_magnitude_0_to_100": {"type": "number"},
+            },
+        },
+    },
+}
+
 
 @dataclass(frozen=True)
 class EWOMModelPaths:
@@ -188,8 +256,10 @@ class EWOMModelPaths:
 def get_ewom_schemas() -> dict[str, dict[str, Any]]:
     return {
         "request": deepcopy(EWOM_SCORE_REQUEST_SCHEMA),
+        "review_set_request": deepcopy(EWOM_REVIEW_SET_REQUEST_SCHEMA),
         "model_paths": deepcopy(EWOM_MODEL_PATHS_SCHEMA),
         "response": deepcopy(EWOM_SCORE_RESPONSE_SCHEMA),
+        "review_set_response": deepcopy(EWOM_REVIEW_SET_RESPONSE_SCHEMA),
     }
 
 
@@ -207,6 +277,22 @@ def score_review(
         resolved_fusion_config,
     )
     return predictor.predict_one(**normalized_review)
+
+
+def score_review_set(
+    review_texts: Sequence[str],
+    *,
+    model_paths: EWOMModelPaths | Mapping[str, Any] | None = None,
+    fusion_config: EWOMFusionConfig | None = None,
+) -> dict[str, Any]:
+    normalized_review_texts = _normalize_review_texts(review_texts)
+    resolved_model_paths = _normalize_model_paths(model_paths)
+    resolved_fusion_config = fusion_config or EWOMFusionConfig()
+    predictor = _get_predictor(
+        resolved_model_paths.normalized(),
+        resolved_fusion_config,
+    )
+    return predictor.predict_many(review_texts=normalized_review_texts)
 
 
 def _normalize_review_payload(review: Mapping[str, Any]) -> dict[str, Any]:
@@ -230,6 +316,20 @@ def _normalize_review_payload(review: Mapping[str, Any]) -> dict[str, Any]:
         "rating": rating,
         "verified_purchase": verified_purchase,
     }
+
+
+def _normalize_review_texts(review_texts: Sequence[str]) -> list[str]:
+    if isinstance(review_texts, (str, bytes)):
+        raise TypeError("review_texts must be an array of strings, not a single string.")
+
+    normalized_review_texts = [str(review_text).strip() for review_text in review_texts]
+    if not normalized_review_texts:
+        raise ValueError("review_texts must contain at least one review.")
+
+    if any(not review_text for review_text in normalized_review_texts):
+        raise ValueError("review_texts must not contain empty reviews.")
+
+    return normalized_review_texts
 
 
 def _normalize_model_paths(

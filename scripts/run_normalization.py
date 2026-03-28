@@ -85,7 +85,7 @@ def append_seller_feedback_call(result, seller_id: str | None, feedback_client: 
         user_id=seller_id,
         feedback_type="FEEDBACK_RECEIVED",
         limit=max(25, SELLER_FEEDBACK_LIMIT),
-        role="BUYER",
+        role="SELLER",
     )
     result["api_calls"].append(
         {
@@ -94,7 +94,7 @@ def append_seller_feedback_call(result, seller_id: str | None, feedback_client: 
                 "user_id": seller_id,
                 "feedback_type": "FEEDBACK_RECEIVED",
                 "limit": max(25, SELLER_FEEDBACK_LIMIT),
-                "filter": "role:BUYER",
+                "filter": "role:SELLER",
             },
             "response": build_response_snapshot(response),
         }

@@ -42,11 +42,21 @@ class FakeFeedbackClient(FeedbackClient):
     ):
         assert user_id == "seller_123"
         assert feedback_type == "FEEDBACK_RECEIVED"
-        assert role == "BUYER"
+        assert role == "SELLER"
         return {
             "feedbackEntries": [
-                {"feedbackComment": {"commentText": "Great seller!"}},
-                {"feedbackComment": {"commentText": "Fast shipping."}},
+                {
+                    "providerUserDetail": {"role": "BUYER"},
+                    "feedbackComment": {"commentText": "Great seller!"},
+                },
+                {
+                    "providerUserDetail": {"role": "BUYER"},
+                    "feedbackComment": {"commentText": "Fast shipping."},
+                },
+                {
+                    "providerUserDetail": {"role": "SELLER"},
+                    "feedbackComment": {"commentText": "Prompt payment, thanks!"},
+                },
                 {"feedbackComment": {"commentText": "", "commentTextRemovedPerPolicy": False}},
                 {"feedbackComment": {"commentText": "Removed", "commentTextRemovedPerPolicy": True}},
             ]

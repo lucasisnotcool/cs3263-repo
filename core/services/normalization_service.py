@@ -143,14 +143,19 @@ class NormalizationService(Normalizer):
             user_id=seller_id,
             feedback_type="FEEDBACK_RECEIVED",
             limit=max(25, self.seller_feedback_limit),
-            role="BUYER",
+            # eBay's role filter maps to the queried user's transaction role.
+            role="SELLER",
         )
 
         feedback_entries = feedback.get("feedbackEntries", [])
         texts = []
         for entry in feedback_entries:
+            provider_role = self._safe_get(entry, "providerUserDetail", "role")
             comment_text = self._safe_get(entry, "feedbackComment", "commentText")
             text_removed = self._safe_get(entry, "feedbackComment", "commentTextRemovedPerPolicy", default=False)
+
+            if provider_role not in (None, "BUYER"):
+                continue
 
             if comment_text and not text_removed:
                 texts.append(comment_text)

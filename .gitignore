@@ -16,6 +16,7 @@ __pycache__/
 
 # Raw datasets
 data/raw/
+data/
 
 # Generated prepared datasets
 data/helpfulness/*.jsonl

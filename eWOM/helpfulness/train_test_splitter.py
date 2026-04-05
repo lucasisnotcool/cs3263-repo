@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import random
@@ -20,22 +21,23 @@ from eWOM.helpfulness.dataset_loader import AmazonReviewsLoader
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
 
-# Edit these constants directly before running the script.
-REVIEW_PATH = Path("data/raw/amazon-reviews-2023/Electronics.jsonl")
-OUTPUT_DIR = PROJECT_ROOT / "data" / "helpfulness"
-TRAIN_OUTPUT_PATH = OUTPUT_DIR / "train.jsonl"
-TEST_OUTPUT_PATH = OUTPUT_DIR / "test.jsonl"
-SUMMARY_OUTPUT_PATH = OUTPUT_DIR / "split_summary.json"
+DEFAULT_REVIEW_PATH = Path("data/raw/amazon-reviews-2023/Electronics.jsonl")
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "helpfulness"
+DEFAULT_TRAIN_OUTPUT_FILENAME = "train.jsonl"
+DEFAULT_VAL_OUTPUT_FILENAME = "val.jsonl"
+DEFAULT_TEST_OUTPUT_FILENAME = "test.jsonl"
+DEFAULT_SUMMARY_OUTPUT_FILENAME = "split_summary.json"
 
-TEST_SIZE = 0.2
-POSITIVE_THRESHOLD = 3
-DROP_MIDDLE = False
-MIN_REVIEW_WORDS = 0
-MAX_ROWS = None
-RANDOM_STATE = 42
-OVERWRITE_OUTPUT = True
-LOG_EVERY_ROWS = 50_000
-SHUFFLE_BUFFER_SIZE = 256
+DEFAULT_VAL_SIZE = 0.1
+DEFAULT_TEST_SIZE = 0.2
+DEFAULT_POSITIVE_THRESHOLD = 3
+DEFAULT_DROP_MIDDLE = False
+DEFAULT_MIN_REVIEW_WORDS = 0
+DEFAULT_MAX_ROWS = None
+DEFAULT_RANDOM_STATE = 42
+DEFAULT_OVERWRITE_OUTPUT = True
+DEFAULT_LOG_EVERY_ROWS = 50_000
+DEFAULT_SHUFFLE_BUFFER_SIZE = 256
 
 
 @dataclass
@@ -48,13 +50,15 @@ class ScanStats:
 
 @dataclass
 class SplitPlan:
-    test_targets: dict[int, int]
     train_targets: dict[int, int]
+    val_targets: dict[int, int]
+    test_targets: dict[int, int]
 
 
 @dataclass
 class AssignmentStats:
     train_label_counts: Counter[int] = field(default_factory=Counter)
+    val_label_counts: Counter[int] = field(default_factory=Counter)
     test_label_counts: Counter[int] = field(default_factory=Counter)
 
 
@@ -88,19 +92,106 @@ class BufferedJsonlWriter:
         self._file.write("\n")
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Create label-stratified train/val/test helpfulness splits from the raw Amazon Reviews file.",
+    )
+    parser.add_argument(
+        "--review-path",
+        default=str(DEFAULT_REVIEW_PATH),
+        help="Path to the raw review JSONL or JSONL.GZ file.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="Directory where train.jsonl, val.jsonl, test.jsonl, and split_summary.json will be written.",
+    )
+    parser.add_argument(
+        "--val-size",
+        type=float,
+        default=DEFAULT_VAL_SIZE,
+        help="Validation split size as a fraction of eligible rows.",
+    )
+    parser.add_argument(
+        "--test-size",
+        type=float,
+        default=DEFAULT_TEST_SIZE,
+        help="Test split size as a fraction of eligible rows.",
+    )
+    parser.add_argument(
+        "--positive-threshold",
+        type=int,
+        default=DEFAULT_POSITIVE_THRESHOLD,
+        help="Minimum helpful-vote count required to label a review as helpful.",
+    )
+    parser.add_argument(
+        "--drop-middle",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_DROP_MIDDLE,
+        help="Whether to drop rows with helpful votes strictly between 0 and the positive threshold.",
+    )
+    parser.add_argument(
+        "--min-review-words",
+        type=int,
+        default=DEFAULT_MIN_REVIEW_WORDS,
+        help="Minimum review word count required for a row to remain eligible.",
+    )
+    parser.add_argument(
+        "--max-rows",
+        type=int,
+        default=DEFAULT_MAX_ROWS,
+        help="Optional cap on how many raw rows to scan before splitting.",
+    )
+    parser.add_argument(
+        "--random-state",
+        type=int,
+        default=DEFAULT_RANDOM_STATE,
+        help="Random seed used for split assignment and buffered shuffling.",
+    )
+    parser.add_argument(
+        "--shuffle-buffer-size",
+        type=int,
+        default=DEFAULT_SHUFFLE_BUFFER_SIZE,
+        help="Buffered shuffle size used while writing the split files.",
+    )
+    parser.add_argument(
+        "--log-every-rows",
+        type=int,
+        default=DEFAULT_LOG_EVERY_ROWS,
+        help="Progress logging interval during scan and write passes.",
+    )
+    parser.add_argument(
+        "--overwrite-output",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_OVERWRITE_OUTPUT,
+        help="Whether to overwrite existing split files in the output directory.",
+    )
+    return parser
+
+
 def log(message: str) -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}", flush=True)
 
 
-def resolve_path(path: Path) -> Path:
+def resolve_path(path: str | Path) -> Path:
+    path = Path(path)
     if path.is_absolute():
         return path
     return PROJECT_ROOT / path
 
 
-def resolve_review_path() -> Path:
-    configured_path = resolve_path(REVIEW_PATH)
+def build_output_paths(output_dir: Path) -> dict[str, Path]:
+    return {
+        "train": output_dir / DEFAULT_TRAIN_OUTPUT_FILENAME,
+        "val": output_dir / DEFAULT_VAL_OUTPUT_FILENAME,
+        "test": output_dir / DEFAULT_TEST_OUTPUT_FILENAME,
+        "summary": output_dir / DEFAULT_SUMMARY_OUTPUT_FILENAME,
+    }
+
+
+def resolve_review_path(review_path: Path, output_dir: Path) -> Path:
+    configured_path = resolve_path(review_path)
     if configured_path.exists():
         return configured_path
 
@@ -108,7 +199,7 @@ def resolve_review_path() -> Path:
         path
         for pattern in ("*.jsonl", "*.jsonl.gz")
         for path in DATA_DIR.rglob(pattern)
-        if OUTPUT_DIR not in path.parents
+        if output_dir not in path.parents
     )
     if len(candidates) == 1:
         log(f"Configured review path not found. Auto-detected source file: {candidates[0]}")
@@ -121,26 +212,25 @@ def resolve_review_path() -> Path:
         f"Project root: {PROJECT_ROOT}\n"
         "Available JSONL candidates under data/:\n"
         f"{candidate_lines}\n"
-        "Update REVIEW_PATH at the top of train_test_splitter.py to your actual source JSONL file."
+        "Pass --review-path with the correct source JSONL file."
     )
 
 
-def ensure_output_dir(overwrite: bool) -> None:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+def ensure_output_dir(output_dir: Path, generated_paths: list[Path], overwrite: bool) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    generated_paths = [TRAIN_OUTPUT_PATH, TEST_OUTPUT_PATH, SUMMARY_OUTPUT_PATH]
     existing_paths = [path for path in generated_paths if path.exists()]
     if existing_paths and not overwrite:
         existing_str = ", ".join(str(path) for path in existing_paths)
         raise FileExistsError(
-            "Output files already exist. Set OVERWRITE_OUTPUT = True to replace them: "
+            "Output files already exist. Re-run with --overwrite-output to replace them: "
             f"{existing_str}"
         )
 
     for path in existing_paths:
         path.unlink()
 
-    existing_fold_dirs = sorted(OUTPUT_DIR.glob("fold_*"))
+    existing_fold_dirs = sorted(output_dir.glob("fold_*"))
     if existing_fold_dirs:
         log("Existing fold_* directories detected. This script leaves them untouched.")
 
@@ -199,15 +289,21 @@ def coerce_bool(value: Any) -> bool:
     return bool(value)
 
 
-def prepare_record(row: dict[str, Any]) -> dict[str, Any] | None:
+def prepare_record(
+    row: dict[str, Any],
+    *,
+    positive_threshold: int,
+    drop_middle: bool,
+    min_review_words: int,
+) -> dict[str, Any] | None:
     title = str(row.get("title") or "")
     text = str(row.get("text") or "")
     helpful_votes = coerce_int(row.get("helpful_votes", 0), default=0)
     review_len_words = len(text.split())
 
-    if DROP_MIDDLE and 0 < helpful_votes < POSITIVE_THRESHOLD:
+    if drop_middle and 0 < helpful_votes < positive_threshold:
         return None
-    if review_len_words < MIN_REVIEW_WORDS:
+    if review_len_words < min_review_words:
         return None
 
     return {
@@ -220,22 +316,48 @@ def prepare_record(row: dict[str, Any]) -> dict[str, Any] | None:
         "parent_asin": row.get("parent_asin"),
         "user_id": row.get("user_id"),
         "timestamp": row.get("timestamp"),
-        "label": int(helpful_votes >= POSITIVE_THRESHOLD),
+        "label": int(helpful_votes >= positive_threshold),
         "review_len_words": review_len_words,
     }
 
 
-def iter_prepared_records(review_path: Path) -> Iterator[dict[str, Any] | None]:
-    loader = AmazonReviewsLoader(review_path, max_rows=MAX_ROWS)
+def iter_prepared_records(
+    review_path: Path,
+    *,
+    max_rows: int | None,
+    positive_threshold: int,
+    drop_middle: bool,
+    min_review_words: int,
+) -> Iterator[dict[str, Any] | None]:
+    loader = AmazonReviewsLoader(review_path, max_rows=max_rows)
     for row in loader.iter_rows():
-        yield prepare_record(row)
+        yield prepare_record(
+            row,
+            positive_threshold=positive_threshold,
+            drop_middle=drop_middle,
+            min_review_words=min_review_words,
+        )
 
 
-def scan_dataset(review_path: Path) -> ScanStats:
+def scan_dataset(
+    review_path: Path,
+    *,
+    max_rows: int | None,
+    positive_threshold: int,
+    drop_middle: bool,
+    min_review_words: int,
+    log_every_rows: int,
+) -> ScanStats:
     stats = ScanStats()
     log(f"Scanning dataset from {review_path}")
 
-    for row in iter_prepared_records(review_path):
+    for row in iter_prepared_records(
+        review_path,
+        max_rows=max_rows,
+        positive_threshold=positive_threshold,
+        drop_middle=drop_middle,
+        min_review_words=min_review_words,
+    ):
         stats.raw_rows_seen += 1
         if row is None:
             stats.skipped_rows += 1
@@ -244,7 +366,7 @@ def scan_dataset(review_path: Path) -> ScanStats:
             stats.eligible_rows += 1
             stats.label_counts[label] += 1
 
-        if stats.raw_rows_seen % LOG_EVERY_ROWS == 0:
+        if log_every_rows > 0 and stats.raw_rows_seen % log_every_rows == 0:
             log(
                 "Scan progress: "
                 f"seen {stats.raw_rows_seen:,} rows | "
@@ -264,12 +386,16 @@ def scan_dataset(review_path: Path) -> ScanStats:
     return stats
 
 
-def allocate_test_targets(label_counts: Counter[int], test_size: float) -> dict[int, int]:
+def allocate_targets(label_counts: Counter[int] | dict[int, int], split_size: float) -> dict[int, int]:
+    label_counts = Counter({int(label): int(count) for label, count in label_counts.items()})
+    if split_size <= 0:
+        return {label: 0 for label in label_counts}
+
     total_rows = sum(label_counts.values())
-    total_test_rows = int(round(total_rows * test_size))
+    total_split_rows = int(round(total_rows * split_size))
 
     exact_targets = {
-        label: label_counts[label] * test_size
+        label: label_counts[label] * split_size
         for label in label_counts
     }
     targets = {
@@ -277,7 +403,7 @@ def allocate_test_targets(label_counts: Counter[int], test_size: float) -> dict[
         for label in label_counts
     }
 
-    remaining = total_test_rows - sum(targets.values())
+    remaining = total_split_rows - sum(targets.values())
     if remaining > 0:
         ranked_labels = sorted(
             label_counts,
@@ -290,50 +416,106 @@ def allocate_test_targets(label_counts: Counter[int], test_size: float) -> dict[
     return targets
 
 
-def build_split_plan(stats: ScanStats) -> SplitPlan:
-    if not 0 < TEST_SIZE < 1:
-        raise ValueError("TEST_SIZE must be between 0 and 1.")
+def build_split_plan(stats: ScanStats, *, val_size: float, test_size: float) -> SplitPlan:
+    if not 0 <= val_size < 1:
+        raise ValueError("val_size must be between 0 and 1.")
+    if not 0 <= test_size < 1:
+        raise ValueError("test_size must be between 0 and 1.")
+    if val_size + test_size >= 1:
+        raise ValueError("val_size + test_size must be less than 1.")
     if len(stats.label_counts) < 2:
         raise ValueError("Splitting requires at least two label classes.")
 
-    test_targets = allocate_test_targets(stats.label_counts, TEST_SIZE)
-    train_targets = {
+    test_targets = allocate_targets(stats.label_counts, test_size)
+    remaining_after_test = {
         label: stats.label_counts[label] - test_targets[label]
+        for label in stats.label_counts
+    }
+    val_relative_size = 0.0 if val_size == 0 else val_size / (1.0 - test_size)
+    val_targets = allocate_targets(remaining_after_test, val_relative_size)
+    train_targets = {
+        label: remaining_after_test[label] - val_targets[label]
         for label in stats.label_counts
     }
 
     if any(count <= 0 for count in train_targets.values()):
         raise ValueError(
-            "TEST_SIZE leaves no training rows for at least one label. "
-            "Reduce TEST_SIZE or use more data."
+            "Configured split sizes leave no training rows for at least one label. "
+            "Reduce val_size/test_size or use more data."
         )
 
-    return SplitPlan(test_targets=test_targets, train_targets=train_targets)
-
-
-def choose_test_row(remaining_total: int, remaining_test: int, rng: random.Random) -> bool:
-    if remaining_test <= 0:
-        return False
-    if remaining_test >= remaining_total:
-        return True
-    return rng.randrange(remaining_total) < remaining_test
-
-
-def assign_and_write(review_path: Path, stats: ScanStats, plan: SplitPlan) -> AssignmentStats:
-    train_writer = BufferedJsonlWriter(
-        TRAIN_OUTPUT_PATH,
-        seed=RANDOM_STATE + 1_001,
-        buffer_size=SHUFFLE_BUFFER_SIZE,
+    return SplitPlan(
+        train_targets=train_targets,
+        val_targets=val_targets,
+        test_targets=test_targets,
     )
-    test_writer = BufferedJsonlWriter(
-        TEST_OUTPUT_PATH,
-        seed=RANDOM_STATE + 1_002,
-        buffer_size=SHUFFLE_BUFFER_SIZE,
-    )
+
+
+def choose_split_row(
+    remaining_total: int,
+    remaining_split_targets: dict[str, int],
+    rng: random.Random,
+) -> str:
+    reserved_targets = {
+        split_name: int(count)
+        for split_name, count in remaining_split_targets.items()
+        if count > 0
+    }
+    reserved_total = sum(reserved_targets.values())
+    if reserved_total <= 0:
+        return "train"
+
+    draw = rng.randrange(remaining_total)
+    if draw >= reserved_total:
+        return "train"
+
+    cumulative = 0
+    for split_name in ("test", "val"):
+        cumulative += reserved_targets.get(split_name, 0)
+        if draw < cumulative:
+            return split_name
+    return "train"
+
+
+def assign_and_write(
+    review_path: Path,
+    stats: ScanStats,
+    plan: SplitPlan,
+    *,
+    output_paths: dict[str, Path],
+    max_rows: int | None,
+    positive_threshold: int,
+    drop_middle: bool,
+    min_review_words: int,
+    random_state: int,
+    shuffle_buffer_size: int,
+    log_every_rows: int,
+) -> AssignmentStats:
+    writers = {
+        "train": BufferedJsonlWriter(
+            output_paths["train"],
+            seed=random_state + 1_001,
+            buffer_size=shuffle_buffer_size,
+        ),
+        "val": BufferedJsonlWriter(
+            output_paths["val"],
+            seed=random_state + 1_002,
+            buffer_size=shuffle_buffer_size,
+        ),
+        "test": BufferedJsonlWriter(
+            output_paths["test"],
+            seed=random_state + 1_003,
+            buffer_size=shuffle_buffer_size,
+        ),
+    }
 
     remaining_total_by_label = {
         label: int(count)
         for label, count in stats.label_counts.items()
+    }
+    remaining_val_by_label = {
+        label: int(count)
+        for label, count in plan.val_targets.items()
     }
     remaining_test_by_label = {
         label: int(count)
@@ -343,8 +525,8 @@ def assign_and_write(review_path: Path, stats: ScanStats, plan: SplitPlan) -> As
         label: int(count)
         for label, count in plan.train_targets.items()
     }
-    test_rngs = {
-        label: random.Random(RANDOM_STATE + 10_000 + label)
+    split_rngs = {
+        label: random.Random(random_state + 10_000 + label)
         for label in stats.label_counts
     }
 
@@ -353,41 +535,55 @@ def assign_and_write(review_path: Path, stats: ScanStats, plan: SplitPlan) -> As
     log("Starting write pass")
 
     try:
-        for row in iter_prepared_records(review_path):
+        for row in iter_prepared_records(
+            review_path,
+            max_rows=max_rows,
+            positive_threshold=positive_threshold,
+            drop_middle=drop_middle,
+            min_review_words=min_review_words,
+        ):
             if row is None:
                 continue
 
             label = int(row["label"])
-            should_go_to_test = choose_test_row(
+            chosen_split = choose_split_row(
                 remaining_total=remaining_total_by_label[label],
-                remaining_test=remaining_test_by_label[label],
-                rng=test_rngs[label],
+                remaining_split_targets={
+                    "test": remaining_test_by_label[label],
+                    "val": remaining_val_by_label[label],
+                },
+                rng=split_rngs[label],
             )
             remaining_total_by_label[label] -= 1
             eligible_rows_written += 1
 
-            if should_go_to_test:
+            if chosen_split == "test":
                 remaining_test_by_label[label] -= 1
-                test_writer.write(row)
                 assignment_stats.test_label_counts[label] += 1
+            elif chosen_split == "val":
+                remaining_val_by_label[label] -= 1
+                assignment_stats.val_label_counts[label] += 1
             else:
                 remaining_train_by_label[label] -= 1
-                train_writer.write(row)
                 assignment_stats.train_label_counts[label] += 1
 
-            if eligible_rows_written % LOG_EVERY_ROWS == 0:
+            writers[chosen_split].write(row)
+
+            if log_every_rows > 0 and eligible_rows_written % log_every_rows == 0:
                 log(
                     "Write progress: "
                     f"assigned {eligible_rows_written:,}/{stats.eligible_rows:,} eligible rows"
                 )
     finally:
-        train_writer.close()
-        test_writer.close()
+        for writer in writers.values():
+            writer.close()
 
     if any(value != 0 for value in remaining_total_by_label.values()):
         raise RuntimeError("Split assignment finished with unassigned label totals.")
     if any(value != 0 for value in remaining_test_by_label.values()):
         raise RuntimeError("Split assignment finished with unfilled test quotas.")
+    if any(value != 0 for value in remaining_val_by_label.values()):
+        raise RuntimeError("Split assignment finished with unfilled val quotas.")
     if any(value != 0 for value in remaining_train_by_label.values()):
         raise RuntimeError("Split assignment finished with unfilled train quotas.")
 
@@ -408,24 +604,37 @@ def positive_rate(counter: Counter[int]) -> float | None:
 
 def build_summary(
     review_path: Path,
+    output_dir: Path,
+    output_paths: dict[str, Path],
     stats: ScanStats,
     plan: SplitPlan,
     assignment_stats: AssignmentStats,
+    *,
+    val_size: float,
+    test_size: float,
+    positive_threshold: int,
+    drop_middle: bool,
+    min_review_words: int,
+    max_rows: int | None,
+    random_state: int,
+    shuffle_buffer_size: int,
 ) -> dict[str, Any]:
     return {
         "config": {
             "review_path": str(review_path),
-            "output_dir": str(OUTPUT_DIR),
-            "train_output_path": str(TRAIN_OUTPUT_PATH),
-            "test_output_path": str(TEST_OUTPUT_PATH),
-            "summary_output_path": str(SUMMARY_OUTPUT_PATH),
-            "test_size": TEST_SIZE,
-            "positive_threshold": POSITIVE_THRESHOLD,
-            "drop_middle": DROP_MIDDLE,
-            "min_review_words": MIN_REVIEW_WORDS,
-            "max_rows": MAX_ROWS,
-            "random_state": RANDOM_STATE,
-            "shuffle_buffer_size": SHUFFLE_BUFFER_SIZE,
+            "output_dir": str(output_dir),
+            "train_output_path": str(output_paths["train"]),
+            "val_output_path": str(output_paths["val"]),
+            "test_output_path": str(output_paths["test"]),
+            "summary_output_path": str(output_paths["summary"]),
+            "val_size": val_size,
+            "test_size": test_size,
+            "positive_threshold": positive_threshold,
+            "drop_middle": drop_middle,
+            "min_review_words": min_review_words,
+            "max_rows": max_rows,
+            "random_state": random_state,
+            "shuffle_buffer_size": shuffle_buffer_size,
         },
         "scan": {
             "raw_rows_seen": int(stats.raw_rows_seen),
@@ -435,44 +644,103 @@ def build_summary(
             "positive_rate": positive_rate(stats.label_counts),
         },
         "split_plan": {
-            "test_targets": {str(label): int(count) for label, count in sorted(plan.test_targets.items())},
-            "train_targets": {str(label): int(count) for label, count in sorted(plan.train_targets.items())},
+            "train_targets": {
+                str(label): int(count) for label, count in sorted(plan.train_targets.items())
+            },
+            "val_targets": {
+                str(label): int(count) for label, count in sorted(plan.val_targets.items())
+            },
+            "test_targets": {
+                str(label): int(count) for label, count in sorted(plan.test_targets.items())
+            },
         },
         "assignment": {
             "train_rows": int(sum(assignment_stats.train_label_counts.values())),
+            "val_rows": int(sum(assignment_stats.val_label_counts.values())),
             "test_rows": int(sum(assignment_stats.test_label_counts.values())),
             "train_label_counts": counter_to_dict(assignment_stats.train_label_counts),
+            "val_label_counts": counter_to_dict(assignment_stats.val_label_counts),
             "test_label_counts": counter_to_dict(assignment_stats.test_label_counts),
             "train_positive_rate": positive_rate(assignment_stats.train_label_counts),
+            "val_positive_rate": positive_rate(assignment_stats.val_label_counts),
             "test_positive_rate": positive_rate(assignment_stats.test_label_counts),
         },
         "notes": {
-            "method": "Two-pass streamed, label-stratified split with buffered shuffle on write.",
+            "method": "Two-pass streamed, label-stratified train/val/test split with buffered shuffle on write.",
             "folds": "No fold files are created by this script. Existing fold_* directories are left untouched.",
         },
     }
 
 
-def write_summary(summary: dict[str, Any]) -> None:
-    with SUMMARY_OUTPUT_PATH.open("w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
-        f.write("\n")
+def write_summary(summary_path: Path, summary: dict[str, Any]) -> None:
+    with summary_path.open("w", encoding="utf-8") as handle:
+        json.dump(summary, handle, indent=2)
+        handle.write("\n")
 
 
 def main() -> None:
-    review_path = resolve_review_path()
-    ensure_output_dir(overwrite=OVERWRITE_OUTPUT)
+    parser = build_parser()
+    args = parser.parse_args()
 
-    stats = scan_dataset(review_path)
-    plan = build_split_plan(stats)
-    assignment_stats = assign_and_write(review_path, stats, plan)
+    output_dir = resolve_path(args.output_dir)
+    output_paths = build_output_paths(output_dir)
+    review_path = resolve_review_path(Path(args.review_path), output_dir)
 
-    summary = build_summary(review_path, stats, plan, assignment_stats)
-    write_summary(summary)
+    ensure_output_dir(
+        output_dir,
+        generated_paths=list(output_paths.values()),
+        overwrite=args.overwrite_output,
+    )
+
+    stats = scan_dataset(
+        review_path,
+        max_rows=args.max_rows,
+        positive_threshold=args.positive_threshold,
+        drop_middle=args.drop_middle,
+        min_review_words=args.min_review_words,
+        log_every_rows=args.log_every_rows,
+    )
+    plan = build_split_plan(
+        stats,
+        val_size=args.val_size,
+        test_size=args.test_size,
+    )
+    assignment_stats = assign_and_write(
+        review_path,
+        stats,
+        plan,
+        output_paths=output_paths,
+        max_rows=args.max_rows,
+        positive_threshold=args.positive_threshold,
+        drop_middle=args.drop_middle,
+        min_review_words=args.min_review_words,
+        random_state=args.random_state,
+        shuffle_buffer_size=args.shuffle_buffer_size,
+        log_every_rows=args.log_every_rows,
+    )
+
+    summary = build_summary(
+        review_path,
+        output_dir,
+        output_paths,
+        stats,
+        plan,
+        assignment_stats,
+        val_size=args.val_size,
+        test_size=args.test_size,
+        positive_threshold=args.positive_threshold,
+        drop_middle=args.drop_middle,
+        min_review_words=args.min_review_words,
+        max_rows=args.max_rows,
+        random_state=args.random_state,
+        shuffle_buffer_size=args.shuffle_buffer_size,
+    )
+    write_summary(output_paths["summary"], summary)
 
     log(
         "Split complete: "
         f"train_rows={sum(assignment_stats.train_label_counts.values()):,} | "
+        f"val_rows={sum(assignment_stats.val_label_counts.values()):,} | "
         f"test_rows={sum(assignment_stats.test_label_counts.values()):,}"
     )
     print(json.dumps(summary, indent=2))

@@ -19,9 +19,11 @@ class HelpfulnessPredictor:
         loaded_model = joblib.load(model_path)
         if isinstance(loaded_model, dict) and "model" in loaded_model:
             self.model = loaded_model["model"]
+            self.model_name = loaded_model.get("model_name")
             self.threshold = float(loaded_model.get("threshold", 0.5))
         else:
             self.model = loaded_model
+            self.model_name = None
             self.threshold = 0.5
 
         self.feature_builder = joblib.load(feature_builder_path)

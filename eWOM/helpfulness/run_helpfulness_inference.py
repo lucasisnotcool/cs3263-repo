@@ -7,7 +7,7 @@ from pathlib import Path
 from eWOM.helpfulness.predictor import HelpfulnessPredictor
 
 
-DEFAULT_MODEL_PREFIX = Path("models/helpfulness/amazon_helpfulness_electronics_tfidf_lr")
+DEFAULT_MODEL_PREFIX = Path("models/helpfulness/amazon_helpfulness_benchmark")
 
 
 def build_parser() -> argparse.ArgumentParser:

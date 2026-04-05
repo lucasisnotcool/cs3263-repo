@@ -1,12 +1,13 @@
 # eWOM Fusion
 
-This module fuses the outputs of the existing helpfulness and sentiment
+This module fuses the outputs of the helpfulness, sentiment, and deception
 pipelines into a single eWOM score.
 
 It uses late fusion rather than feature-level fusion:
 
 - helpfulness decides whether a review should be trusted as influential
 - sentiment provides the direction and strength of the message
+- deception discounts reviews that look fake or manipulative
 
 This design fits the current repo because the two branches are already trained
 independently and already expose prediction probabilities.
@@ -23,15 +24,18 @@ The fusion layer consumes:
 - `usefulness_probability` from `eWOM.helpfulness.predictor.HelpfulnessPredictor`
 - `positive_probability` and `negative_probability` from
   `eWOM.sentiment_analysis.predictor.SentimentPredictor`
+- `deception_probability` from `eWOM.deception.predictor.DeceptionPredictor`
 
 ## Scoring Rule
 
-The current scorer is implemented in `scorer.py` and uses a soft gate:
+The current scorer is implemented in `scorer.py` and uses a two-stage gate:
 
 ```text
-gate = sigmoid(sharpness * (p_helpful - center))
-signed_score = gate * (p_positive - p_negative)
-magnitude_score = gate * abs(p_positive - p_negative)
+helpfulness_gate = sigmoid(sharpness * (p_helpful - center))
+deception_weight = 1 - p_deception
+informative_gate = helpfulness_gate * deception_weight
+signed_score = informative_gate * (p_positive - p_negative)
+magnitude_score = informative_gate * abs(p_positive - p_negative)
 ```
 
 Default configuration:
@@ -42,7 +46,8 @@ Default configuration:
 Interpretation:
 
 - if helpfulness is low, the final score is suppressed even when sentiment is strong
-- if helpfulness is high, the final score follows the sentiment branch
+- if deception is high, the final score is further discounted
+- if helpfulness is high and deception is low, the final score follows the sentiment branch
 - strongly negative but useful reviews remain strongly negative
 - uncertain sentiment stays near neutral
 
@@ -52,6 +57,9 @@ Interpretation:
 
 - `usefulness_probability`: helpfulness probability after clamping
 - `helpfulness_gate`: soft gate value in `[0, 1]`
+- `deception_probability`: deception probability when available, else `None`
+- `deception_weight`: authenticity multiplier in `[0, 1]`
+- `informative_gate`: `helpfulness_gate * deception_weight`
 - `positive_probability`: normalized positive sentiment probability
 - `negative_probability`: normalized negative sentiment probability
 - `sentiment_polarity`: `positive_probability - negative_probability`
@@ -97,6 +105,7 @@ Returned structure:
 {
     "helpfulness": {...},
     "sentiment": {...},
+    "deception": {...},
     "fusion": {...},
 }
 ```
@@ -108,15 +117,15 @@ of averaging raw sentiment alone.
 
 The aggregation stage does two things:
 
-- it weights each review by its review-level `helpfulness_gate`
+- it weights each review by its review-level `informative_gate`
 - it applies a second `review_set_gate` based on review volume
 
 Implemented rule:
 
 ```text
-informative_review_weight = sum(helpfulness_gate_i)
+informative_review_weight = sum(informative_gate_i)
 weighted_sentiment_polarity =
-    sum(helpfulness_gate_i * sentiment_polarity_i) / informative_review_weight
+    sum(informative_gate_i * sentiment_polarity_i) / informative_review_weight
 review_set_gate = 1 - exp(-review_count / review_set_gate_scale)
 final_signed_score = review_set_gate * weighted_sentiment_polarity
 ```
@@ -153,6 +162,7 @@ Returned structure:
             "text": "...",
             "helpfulness": {...},
             "sentiment": {...},
+            "deception": {...},
             "fusion": {...},
         }
     ],

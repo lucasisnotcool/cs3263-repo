@@ -1,12 +1,13 @@
 # eWOM Agent
 
-This package scores a single review with three linked outputs:
+This package scores a single review with four linked outputs:
 
 - `helpfulness`: whether the review is likely to be useful
 - `sentiment`: whether the review is positive or negative
-- `fusion`: a late-fusion eWOM score that gates sentiment by helpfulness
+- `deception`: whether the review looks deceptive, using `experiment_trust_fake_reviews`
+- `fusion`: a late-fusion eWOM score that gates sentiment by helpfulness and authenticity
 
-The current public entrypoint is `score_review` in `eWOM/api.py`, which loads the trained helpfulness and sentiment artifacts, validates the request payload, and returns a structured JSON-compatible response.
+The current public entrypoint is `score_review` in `eWOM/api.py`, which loads the trained helpfulness and sentiment artifacts, calls the fake-review trust deploy pipeline for deception, validates the request payload, and returns a structured JSON-compatible response.
 
 ## What Is In Scope
 
@@ -15,6 +16,7 @@ The current agent is a Python package, not an installed console app or web servi
 - Package API: `eWOM/api.py`
 - Helpfulness model: `eWOM/helpfulness`
 - Sentiment model: `eWOM/sentiment_analysis`
+- Deception model adapter: `eWOM/deception`
 - Fusion layer: `eWOM/fusion`
 
 The default runtime artifact paths are:
@@ -66,14 +68,36 @@ References:
 - `eWOM/sentiment_analysis/predictor.py`
 - `models/sentiment/amazon_polarity_baseline.joblib`
 
-### 3. Fusion
+### 3. Deception
 
-The fusion layer applies a soft helpfulness gate to the sentiment polarity:
+The deception branch is a thin adapter over the deploy-ready runtime in
+`experiment_trust_fake_reviews`.
+
+For each review it sends the review text into that pipeline and returns:
+
+- `deception_probability`
+- `authenticity_probability`
+- `trust_probability`
+- `graph_uncertainty_entropy`
+- `overall_confidence`
+- `status` and structured `error` details when the trust pipeline is unavailable
+
+This branch does not retrain anything. It just uses:
+
+- `experiment_trust_fake_reviews.run_deployment_pipeline`
+- `experiment_trust_fake_reviews.TrustFakeReviewsDeployPipeline`
+
+### 4. Fusion
+
+The fusion layer applies a soft helpfulness gate and then downweights the review
+again when the deception branch says the review is likely fake:
 
 ```text
-gate = sigmoid(sharpness * (p_helpful - center))
-signed_score = gate * (p_positive - p_negative)
-magnitude_score = gate * abs(p_positive - p_negative)
+helpfulness_gate = sigmoid(sharpness * (p_helpful - center))
+deception_weight = 1 - p_deception
+informative_gate = helpfulness_gate * deception_weight
+signed_score = informative_gate * (p_positive - p_negative)
+magnitude_score = informative_gate * abs(p_positive - p_negative)
 ```
 
 Default configuration:
@@ -81,7 +105,9 @@ Default configuration:
 - `helpfulness_gate_center = 0.5`
 - `helpfulness_gate_sharpness = 8.0`
 
-This means strong sentiment is intentionally suppressed when the review looks unhelpful.
+This means strong sentiment is intentionally suppressed when the review looks
+unhelpful or deceptive. If the deception stream is unavailable, fusion falls
+back to full authenticity weight.
 
 Reference:
 
@@ -117,17 +143,31 @@ Response shape:
     "predicted_label": 1,
     "predicted_label_text": "positive"
   },
+  "deception": {
+    "status": "ok",
+    "source": "experiment_trust_fake_reviews",
+    "deception_probability": 0.25,
+    "authenticity_probability": 0.75,
+    "trust_probability": 0.75,
+    "is_deceptive": false,
+    "graph_uncertainty_entropy": 0.4,
+    "overall_confidence": 0.8,
+    "error": null
+  },
   "fusion": {
     "usefulness_probability": 0.1408,
     "helpfulness_gate": 0.0535,
+    "deception_probability": 0.25,
+    "deception_weight": 0.75,
+    "informative_gate": 0.0401,
     "positive_probability": 0.9951,
     "negative_probability": 0.0049,
     "sentiment_polarity": 0.9901,
     "sentiment_strength": 0.9901,
-    "signed_ewom_score": 0.0529,
-    "magnitude_ewom_score": 0.0529,
-    "ewom_score_0_to_100": 52.65,
-    "ewom_magnitude_0_to_100": 5.29
+    "signed_ewom_score": 0.0397,
+    "magnitude_ewom_score": 0.0397,
+    "ewom_score_0_to_100": 51.98,
+    "ewom_magnitude_0_to_100": 3.97
   }
 }
 ```
@@ -199,7 +239,7 @@ Available flags:
 
 Purpose:
 
-- runs one review through the full helpfulness + sentiment + fusion stack
+- runs one review through the full helpfulness + sentiment + deception + fusion stack
 - prints a JSON result to stdout
 
 Implementation:

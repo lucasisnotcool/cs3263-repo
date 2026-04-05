@@ -66,10 +66,48 @@ EWOM_MODEL_PATHS_SCHEMA: dict[str, Any] = {
     },
 }
 
+EWOM_DECEPTION_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "status",
+        "source",
+        "deception_probability",
+        "authenticity_probability",
+        "trust_probability",
+        "is_deceptive",
+        "graph_uncertainty_entropy",
+        "overall_confidence",
+        "error",
+    ],
+    "properties": {
+        "status": {
+            "type": "string",
+            "enum": ["ok", "unavailable", "error"],
+        },
+        "source": {"type": "string"},
+        "deception_probability": {"type": ["number", "null"]},
+        "authenticity_probability": {"type": ["number", "null"]},
+        "trust_probability": {"type": ["number", "null"]},
+        "is_deceptive": {"type": ["boolean", "null"]},
+        "graph_uncertainty_entropy": {"type": ["number", "null"]},
+        "overall_confidence": {"type": ["number", "null"]},
+        "error": {
+            "type": ["object", "null"],
+            "additionalProperties": False,
+            "required": ["type", "message"],
+            "properties": {
+                "type": {"type": "string"},
+                "message": {"type": "string"},
+            },
+        },
+    },
+}
+
 EWOM_SCORE_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["helpfulness", "sentiment", "fusion"],
+    "required": ["helpfulness", "sentiment", "deception", "fusion"],
     "properties": {
         "helpfulness": {
             "type": "object",
@@ -99,12 +137,16 @@ EWOM_SCORE_RESPONSE_SCHEMA: dict[str, Any] = {
                 },
             },
         },
+        "deception": EWOM_DECEPTION_RESPONSE_SCHEMA,
         "fusion": {
             "type": "object",
             "additionalProperties": False,
             "required": [
                 "usefulness_probability",
                 "helpfulness_gate",
+                "deception_probability",
+                "deception_weight",
+                "informative_gate",
                 "positive_probability",
                 "negative_probability",
                 "sentiment_polarity",
@@ -117,6 +159,9 @@ EWOM_SCORE_RESPONSE_SCHEMA: dict[str, Any] = {
             "properties": {
                 "usefulness_probability": {"type": "number"},
                 "helpfulness_gate": {"type": "number"},
+                "deception_probability": {"type": ["number", "null"]},
+                "deception_weight": {"type": "number"},
+                "informative_gate": {"type": "number"},
                 "positive_probability": {"type": "number"},
                 "negative_probability": {"type": "number"},
                 "sentiment_polarity": {"type": "number"},
@@ -142,11 +187,12 @@ EWOM_REVIEW_SET_RESPONSE_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["text", "helpfulness", "sentiment", "fusion"],
+                "required": ["text", "helpfulness", "sentiment", "deception", "fusion"],
                 "properties": {
                     "text": {"type": "string"},
                     "helpfulness": EWOM_SCORE_RESPONSE_SCHEMA["properties"]["helpfulness"],
                     "sentiment": EWOM_SCORE_RESPONSE_SCHEMA["properties"]["sentiment"],
+                    "deception": EWOM_SCORE_RESPONSE_SCHEMA["properties"]["deception"],
                     "fusion": EWOM_SCORE_RESPONSE_SCHEMA["properties"]["fusion"],
                 },
             },
@@ -159,6 +205,9 @@ EWOM_REVIEW_SET_RESPONSE_SCHEMA: dict[str, Any] = {
                 "informative_review_weight",
                 "mean_usefulness_probability",
                 "mean_helpfulness_gate",
+                "mean_deception_probability",
+                "mean_deception_weight",
+                "mean_informative_gate",
                 "weighted_positive_probability",
                 "weighted_negative_probability",
                 "weighted_sentiment_polarity",
@@ -174,6 +223,9 @@ EWOM_REVIEW_SET_RESPONSE_SCHEMA: dict[str, Any] = {
                 "informative_review_weight": {"type": "number"},
                 "mean_usefulness_probability": {"type": "number"},
                 "mean_helpfulness_gate": {"type": "number"},
+                "mean_deception_probability": {"type": ["number", "null"]},
+                "mean_deception_weight": {"type": "number"},
+                "mean_informative_gate": {"type": "number"},
                 "weighted_positive_probability": {"type": "number"},
                 "weighted_negative_probability": {"type": "number"},
                 "weighted_sentiment_polarity": {"type": "number"},
@@ -201,19 +253,19 @@ class EWOMModelPaths:
         root = Path(project_root) if project_root is not None else PROJECT_ROOT
         return cls(
             helpfulness_model_path=str(
-                root / "models" / "helpfulness" / "amazon_helpfulness_electronics_tfidf_lr.joblib"
+                root / "models" / "helpfulness" / "amazon_helpfulness_benchmark.joblib"
             ),
             helpfulness_feature_builder_path=str(
                 root
                 / "models"
                 / "helpfulness"
-                / "amazon_helpfulness_electronics_tfidf_lr_feature_builder.joblib"
+                / "amazon_helpfulness_benchmark_feature_builder.joblib"
             ),
             sentiment_model_path=str(
-                root / "models" / "sentiment" / "amazon_polarity_baseline.joblib"
+                root / "models" / "sentiment" / "amazon_polarity_full_benchmark.joblib"
             ),
             sentiment_feature_builder_path=str(
-                root / "models" / "sentiment" / "amazon_polarity_baseline_feature_builder.joblib"
+                root / "models" / "sentiment" / "amazon_polarity_full_benchmark_feature_builder.joblib"
             ),
         )
 

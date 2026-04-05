@@ -9,6 +9,7 @@ from typing import Any
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn.base import clone
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -23,11 +24,13 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.model_selection import train_test_split
+from sklearn.naive_bayes import ComplementNB, MultinomialNB
 
 from .dataset_loader import LABEL_TEXT_BY_ID
 
 
 LOGGER = logging.getLogger(__name__)
+DEFAULT_MODEL_SELECTION_METRIC = "macro_f1"
 
 
 @dataclass(frozen=True)
@@ -61,21 +64,88 @@ def _macro_f1_from_confusion(tp: int, fp: int, fn: int, tn: int) -> float:
     return (positive_f1 + negative_f1) / 2.0
 
 
-class HelpfulnessTrainer:
-    DEFAULT_CLASSIFICATION_THRESHOLD = 0.5
-
-    def __init__(self, feature_builder, random_state: int = 42, log_level: str = "INFO"):
-        self.feature_builder = feature_builder
-        self.random_state = random_state
-        self.log_level = log_level
-        self.model = LogisticRegression(
+def build_default_model_candidates(random_state: int) -> dict[str, Any]:
+    return {
+        "logistic_regression": LogisticRegression(
             solver="saga",
             max_iter=500,
             class_weight="balanced",
             random_state=random_state,
+        ),
+        "multinomial_nb": MultinomialNB(),
+        "complement_nb": ComplementNB(),
+    }
+
+
+def _metric_or_neg_inf(value: float | None) -> float:
+    if value is None:
+        return float("-inf")
+    return float(value)
+
+
+def _format_optional_metric(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):.6f}"
+
+
+def _candidate_ranking_key(metrics: dict[str, Any]) -> tuple[float, float, float, float]:
+    return (
+        float(metrics[DEFAULT_MODEL_SELECTION_METRIC]),
+        _metric_or_neg_inf(metrics.get("average_precision")),
+        _metric_or_neg_inf(metrics.get("roc_auc")),
+        float(metrics["balanced_accuracy"]),
+    )
+
+
+class HelpfulnessTrainer:
+    DEFAULT_CLASSIFICATION_THRESHOLD = 0.5
+
+    def __init__(
+        self,
+        feature_builder,
+        random_state: int = 42,
+        log_level: str = "INFO",
+        model_candidates: dict[str, Any] | None = None,
+    ):
+        self.feature_builder = feature_builder
+        self.random_state = random_state
+        self.log_level = log_level
+        self.model_candidates = model_candidates or build_default_model_candidates(
+            random_state=random_state
         )
+        self.model = None
+        self.model_name: str | None = None
         self.threshold = self.DEFAULT_CLASSIFICATION_THRESHOLD
         self.threshold_selection_summary: dict[str, Any] | None = None
+        self.model_selection_summary: dict[str, Any] | None = None
+
+    def make_train_val_split(
+        self,
+        df: pd.DataFrame,
+        *,
+        val_ratio: float = 0.1,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        if not 0.0 < val_ratio < 1.0:
+            raise ValueError("val_ratio must be between 0 and 1.")
+
+        train_df, val_df = train_test_split(
+            df,
+            test_size=val_ratio,
+            random_state=self.random_state,
+            stratify=df["label"],
+        )
+        train_df = train_df.reset_index(drop=True)
+        val_df = val_df.reset_index(drop=True)
+
+        LOGGER.info(
+            "Created stratified train/val split with train_rows=%s, val_rows=%s, train_positive_rate=%.6f, val_positive_rate=%.6f",
+            len(train_df),
+            len(val_df),
+            train_df["label"].mean(),
+            val_df["label"].mean(),
+        )
+        return train_df, val_df
 
     def make_train_dev_split(
         self,
@@ -83,31 +153,18 @@ class HelpfulnessTrainer:
         *,
         dev_ratio: float = 0.1,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        if not 0.0 < dev_ratio < 1.0:
-            raise ValueError("dev_ratio must be between 0 and 1.")
+        return self.make_train_val_split(df, val_ratio=dev_ratio)
 
-        train_df, dev_df = train_test_split(
-            df,
-            test_size=dev_ratio,
-            random_state=self.random_state,
-            stratify=df["label"],
-        )
-        train_df = train_df.reset_index(drop=True)
-        dev_df = dev_df.reset_index(drop=True)
+    def fit(self, train_df: pd.DataFrame, val_df: pd.DataFrame) -> None:
+        if not self.model_candidates:
+            raise ValueError("At least one model candidate is required.")
 
-        LOGGER.info(
-            "Created stratified train/dev split with train_rows=%s, dev_rows=%s, train_positive_rate=%.6f, dev_positive_rate=%.6f",
-            len(train_df),
-            len(dev_df),
-            train_df["label"].mean(),
-            dev_df["label"].mean(),
-        )
-        return train_df, dev_df
-
-    def fit(self, train_df: pd.DataFrame, dev_df: pd.DataFrame) -> None:
         LOGGER.debug(
-            "Trainer hyperparameters: model=%s feature_builder=%s numeric_features=%s",
-            self.model.get_params(),
+            "Trainer hyperparameters: model_candidates=%s feature_builder=%s numeric_features=%s",
+            {
+                name: _to_builtin(candidate.get_params())
+                for name, candidate in self.model_candidates.items()
+            },
             asdict(self.feature_builder.config),
             list(self.feature_builder.NUMERIC_FEATURE_NAMES),
         )
@@ -115,32 +172,78 @@ class HelpfulnessTrainer:
         x_train = self.feature_builder.fit_transform(train_df)
         LOGGER.info("Built training feature matrix with shape=%s", x_train.shape)
 
-        LOGGER.info("Training logistic regression model")
-        self.model.fit(x_train, train_df["label"].tolist())
-        LOGGER.info("Model training complete")
+        LOGGER.info("Building validation feature matrix with %s rows", len(val_df))
+        x_val = self.feature_builder.transform(val_df)
+        LOGGER.info("Built validation feature matrix with shape=%s", x_val.shape)
 
-        LOGGER.info("Building development feature matrix with %s rows", len(dev_df))
-        x_dev = self.feature_builder.transform(dev_df)
-        LOGGER.info("Built development feature matrix with shape=%s", x_dev.shape)
+        y_train = train_df["label"].tolist()
+        y_val = np.asarray(val_df["label"].tolist(), dtype=int)
+        best_model = None
+        best_model_name = None
+        best_selection_summary = None
+        best_ranking_key = None
+        candidate_models: dict[str, Any] = {}
 
-        LOGGER.info("Selecting classification threshold on the development split")
-        dev_positive_probs = self._predict_positive_probabilities_from_matrix(x_dev)
-        selection_summary = self._select_threshold(
-            np.asarray(dev_df["label"].tolist(), dtype=int),
-            dev_positive_probs,
-        )
-        self.threshold = selection_summary["best_threshold"]
-        self.threshold_selection_summary = selection_summary
         LOGGER.info(
-            "Selected best threshold=%.6f with macro_f1=%.6f across %s candidate thresholds",
+            "Training and comparing %s candidate models on the validation split",
+            len(self.model_candidates),
+        )
+        for model_name, candidate in self.model_candidates.items():
+            LOGGER.info(
+                "Training candidate model '%s' (%s)",
+                model_name,
+                candidate.__class__.__name__,
+            )
+            model = clone(candidate)
+            model.fit(x_train, y_train)
+
+            val_positive_probs = self._predict_positive_probabilities(model, x_val)
+            selection_summary = self._select_threshold(y_val, val_positive_probs)
+            selected_metrics = selection_summary["selected_threshold_metrics"]
+            ranking_key = _candidate_ranking_key(selected_metrics)
+            candidate_models[model_name] = {
+                "model_class": model.__class__.__name__,
+                "model_params": _to_builtin(model.get_params()),
+                "selection_summary": selection_summary,
+            }
+            LOGGER.info(
+                "Candidate '%s' val macro_f1=%.6f average_precision=%s threshold=%.6f",
+                model_name,
+                selected_metrics["macro_f1"],
+                _format_optional_metric(selected_metrics["average_precision"]),
+                selection_summary["best_threshold"],
+            )
+            if best_ranking_key is None or ranking_key > best_ranking_key:
+                best_model = model
+                best_model_name = model_name
+                best_selection_summary = selection_summary
+                best_ranking_key = ranking_key
+
+        if best_model is None or best_model_name is None or best_selection_summary is None:
+            raise RuntimeError("Failed to train any helpfulness model candidate.")
+
+        self.model = best_model
+        self.model_name = best_model_name
+        self.threshold = best_selection_summary["best_threshold"]
+        self.threshold_selection_summary = best_selection_summary
+        self.model_selection_summary = {
+            "selection_split": "val",
+            "selection_metric": DEFAULT_MODEL_SELECTION_METRIC,
+            "selected_model": best_model_name,
+            "selected_model_class": best_model.__class__.__name__,
+            "candidate_models": candidate_models,
+        }
+        LOGGER.info(
+            "Selected model '%s' with threshold=%.6f and val macro_f1=%.6f across %s candidate thresholds",
+            self.model_name,
             self.threshold,
-            selection_summary["best_metric_value"],
-            selection_summary["candidate_thresholds"],
+            best_selection_summary["best_metric_value"],
+            best_selection_summary["candidate_thresholds"],
         )
         LOGGER.debug(
             "Threshold metric snapshots: default=%s selected=%s",
-            json.dumps(selection_summary["default_threshold_metrics"], sort_keys=True),
-            json.dumps(selection_summary["selected_threshold_metrics"], sort_keys=True),
+            json.dumps(best_selection_summary["default_threshold_metrics"], sort_keys=True),
+            json.dumps(best_selection_summary["selected_threshold_metrics"], sort_keys=True),
         )
 
     def evaluate(self, df: pd.DataFrame, threshold: float | None = None) -> dict[str, Any]:
@@ -159,6 +262,9 @@ class HelpfulnessTrainer:
         )
 
     def save(self, output_prefix: str) -> HelpfulnessArtifacts:
+        if self.model is None or self.model_name is None:
+            raise ValueError("Model has not been trained yet.")
+
         output_root = Path(output_prefix)
         output_root.parent.mkdir(parents=True, exist_ok=True)
 
@@ -166,6 +272,7 @@ class HelpfulnessTrainer:
         feature_builder_path = f"{output_prefix}_feature_builder.joblib"
         bundle = {
             "model": self.model,
+            "model_name": self.model_name,
             "threshold": float(self.threshold),
             "label_text_by_id": LABEL_TEXT_BY_ID,
         }
@@ -182,9 +289,14 @@ class HelpfulnessTrainer:
         )
 
     def _predict_positive_probabilities_from_matrix(self, x) -> np.ndarray:
-        probabilities = self.model.predict_proba(x)
+        if self.model is None:
+            raise ValueError("Model has not been trained yet.")
+        return self._predict_positive_probabilities(self.model, x)
+
+    def _predict_positive_probabilities(self, model, x) -> np.ndarray:
+        probabilities = model.predict_proba(x)
         class_to_index = {
-            int(label): index for index, label in enumerate(self.model.classes_)
+            int(label): index for index, label in enumerate(model.classes_)
         }
         positive_index = class_to_index[1]
         return probabilities[:, positive_index]

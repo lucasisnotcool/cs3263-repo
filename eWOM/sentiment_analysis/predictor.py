@@ -8,7 +8,13 @@ from .preprocess import SentimentPreprocessor
 
 class SentimentPredictor:
     def __init__(self, model_path: str, feature_builder_path: str):
-        self.model = joblib.load(model_path)
+        loaded_model = joblib.load(model_path)
+        if isinstance(loaded_model, dict) and "model" in loaded_model:
+            self.model = loaded_model["model"]
+            self.model_name = loaded_model.get("model_name")
+        else:
+            self.model = loaded_model
+            self.model_name = None
         self.feature_builder = joblib.load(feature_builder_path)
         self.preprocessor = SentimentPreprocessor()
 

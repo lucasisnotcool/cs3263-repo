@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from eWOM.deception import DeceptionPredictor
 from eWOM.helpfulness.predictor import HelpfulnessPredictor
 from eWOM.helpfulness.preprocess import HelpfulnessPreprocessor
 from eWOM.sentiment_analysis.predictor import SentimentPredictor
@@ -28,6 +29,7 @@ class EWOMFusionPredictor:
             sentiment_model_path,
             sentiment_feature_builder_path,
         )
+        self.deception_predictor = DeceptionPredictor()
         self.scorer = EWOMFusionScorer(fusion_config)
 
     def predict_one(
@@ -47,6 +49,7 @@ class EWOMFusionPredictor:
         return {
             "helpfulness": review_prediction["helpfulness"],
             "sentiment": review_prediction["sentiment"],
+            "deception": review_prediction["deception"],
             "fusion": review_prediction["fusion"],
         }
 
@@ -77,24 +80,31 @@ class EWOMFusionPredictor:
             verified_purchases=verified_purchases,
         )
         sentiment_predictions = self.sentiment_predictor.predict_many(review_texts)
+        deception_predictions = self.deception_predictor.predict_many(
+            review_texts,
+            titles=titles,
+        )
 
         reviews = []
         review_scores = []
-        for text, helpfulness_prediction, sentiment_prediction in zip(
+        for text, helpfulness_prediction, sentiment_prediction, deception_prediction in zip(
             review_texts,
             helpfulness_predictions,
             sentiment_predictions,
+            deception_predictions,
         ):
             fusion_prediction = self.scorer.score(
                 usefulness_probability=helpfulness_prediction["usefulness_probability"],
                 positive_probability=sentiment_prediction["positive_probability"],
                 negative_probability=sentiment_prediction["negative_probability"],
+                deception_probability=deception_prediction["deception_probability"],
             )
             reviews.append(
                 {
                     "text": text,
                     "helpfulness": helpfulness_prediction,
                     "sentiment": sentiment_prediction,
+                    "deception": deception_prediction,
                     "fusion": fusion_prediction,
                 }
             )

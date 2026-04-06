@@ -44,10 +44,16 @@ class EWOMFusionScorer:
         usefulness_probability: float,
         positive_probability: float,
         negative_probability: float,
-    ) -> dict[str, float]:
+        deception_probability: float | None = None,
+    ) -> dict[str, float | None]:
         usefulness_probability = _clamp_probability(usefulness_probability)
         positive_probability = max(0.0, float(positive_probability))
         negative_probability = max(0.0, float(negative_probability))
+        normalized_deception_probability = (
+            None
+            if deception_probability is None
+            else _clamp_probability(deception_probability)
+        )
 
         total_sentiment_probability = positive_probability + negative_probability
         if total_sentiment_probability > 0:
@@ -64,14 +70,23 @@ class EWOMFusionScorer:
             self.config.helpfulness_gate_sharpness
             * (usefulness_probability - self.config.helpfulness_gate_center)
         )
+        deception_weight = (
+            1.0
+            if normalized_deception_probability is None
+            else 1.0 - normalized_deception_probability
+        )
+        informative_gate = helpfulness_gate * deception_weight
         sentiment_polarity = positive_probability - negative_probability
         sentiment_strength = abs(sentiment_polarity)
-        signed_ewom_score = helpfulness_gate * sentiment_polarity
-        magnitude_ewom_score = helpfulness_gate * sentiment_strength
+        signed_ewom_score = informative_gate * sentiment_polarity
+        magnitude_ewom_score = informative_gate * sentiment_strength
 
         return {
             "usefulness_probability": usefulness_probability,
             "helpfulness_gate": helpfulness_gate,
+            "deception_probability": normalized_deception_probability,
+            "deception_weight": deception_weight,
+            "informative_gate": informative_gate,
             "positive_probability": positive_probability,
             "negative_probability": negative_probability,
             "sentiment_polarity": sentiment_polarity,
@@ -84,47 +99,63 @@ class EWOMFusionScorer:
 
     def aggregate(
         self,
-        review_scores: Sequence[Mapping[str, float]],
-    ) -> dict[str, float]:
+        review_scores: Sequence[Mapping[str, float | None]],
+    ) -> dict[str, float | None]:
         if not review_scores:
             raise ValueError("review_scores must contain at least one review.")
 
         normalized_scores = [self._normalize_review_score(score) for score in review_scores]
         review_count = len(normalized_scores)
         informative_review_weight = sum(
-            score["helpfulness_gate"] for score in normalized_scores
+            score["informative_gate"] for score in normalized_scores
         )
 
         mean_usefulness_probability = sum(
             score["usefulness_probability"] for score in normalized_scores
         ) / review_count
-        mean_helpfulness_gate = informative_review_weight / review_count
+        mean_helpfulness_gate = (
+            sum(score["helpfulness_gate"] for score in normalized_scores) / review_count
+        )
+        mean_informative_gate = informative_review_weight / review_count
+        deception_probabilities = [
+            score["deception_probability"]
+            for score in normalized_scores
+            if score["deception_probability"] is not None
+        ]
+        mean_deception_probability = (
+            sum(deception_probabilities) / len(deception_probabilities)
+            if deception_probabilities
+            else None
+        )
+        mean_deception_weight = (
+            sum(score["deception_weight"] for score in normalized_scores) / review_count
+        )
 
         if informative_review_weight > 0:
             weighted_positive_probability = (
                 sum(
-                    score["helpfulness_gate"] * score["positive_probability"]
+                    score["informative_gate"] * score["positive_probability"]
                     for score in normalized_scores
                 )
                 / informative_review_weight
             )
             weighted_negative_probability = (
                 sum(
-                    score["helpfulness_gate"] * score["negative_probability"]
+                    score["informative_gate"] * score["negative_probability"]
                     for score in normalized_scores
                 )
                 / informative_review_weight
             )
             weighted_sentiment_polarity = (
                 sum(
-                    score["helpfulness_gate"] * score["sentiment_polarity"]
+                    score["informative_gate"] * score["sentiment_polarity"]
                     for score in normalized_scores
                 )
                 / informative_review_weight
             )
             weighted_sentiment_strength = (
                 sum(
-                    score["helpfulness_gate"] * score["sentiment_strength"]
+                    score["informative_gate"] * score["sentiment_strength"]
                     for score in normalized_scores
                 )
                 / informative_review_weight
@@ -145,6 +176,9 @@ class EWOMFusionScorer:
             "informative_review_weight": informative_review_weight,
             "mean_usefulness_probability": mean_usefulness_probability,
             "mean_helpfulness_gate": mean_helpfulness_gate,
+            "mean_deception_probability": mean_deception_probability,
+            "mean_deception_weight": mean_deception_weight,
+            "mean_informative_gate": mean_informative_gate,
             "weighted_positive_probability": weighted_positive_probability,
             "weighted_negative_probability": weighted_negative_probability,
             "weighted_sentiment_polarity": weighted_sentiment_polarity,
@@ -156,12 +190,36 @@ class EWOMFusionScorer:
             "final_ewom_magnitude_0_to_100": 100.0 * final_magnitude_ewom_score,
         }
 
-    def _normalize_review_score(self, review_score: Mapping[str, float]) -> dict[str, float]:
+    def _normalize_review_score(
+        self,
+        review_score: Mapping[str, float | None],
+    ) -> dict[str, float | None]:
+        deception_probability_raw = review_score.get("deception_probability")
+        deception_probability = (
+            None
+            if deception_probability_raw is None
+            else _clamp_probability(float(deception_probability_raw))
+        )
+        deception_weight = _clamp_probability(
+            review_score.get(
+                "deception_weight",
+                1.0 if deception_probability is None else 1.0 - deception_probability,
+            )
+        )
+        informative_gate = _clamp_probability(
+            review_score.get(
+                "informative_gate",
+                _clamp_probability(review_score["helpfulness_gate"]) * deception_weight,
+            )
+        )
         return {
             "usefulness_probability": _clamp_probability(
                 review_score["usefulness_probability"]
             ),
             "helpfulness_gate": _clamp_probability(review_score["helpfulness_gate"]),
+            "deception_probability": deception_probability,
+            "deception_weight": deception_weight,
+            "informative_gate": informative_gate,
             "positive_probability": _clamp_probability(
                 review_score["positive_probability"]
             ),

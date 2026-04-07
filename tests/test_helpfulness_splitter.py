@@ -8,7 +8,11 @@ from pathlib import Path
 from eWOM.helpfulness.dataset_loader import PreparedHelpfulnessSplitLoader
 from eWOM.helpfulness.train_test_splitter import (
     DEFAULT_POSITIVE_THRESHOLD,
+    assign_and_write,
+    build_output_paths,
+    build_split_plan,
     prepare_record,
+    scan_dataset,
 )
 
 
@@ -50,6 +54,59 @@ class HelpfulnessSplitBuilderTests(unittest.TestCase):
 
         self.assertEqual(loaded["helpful_votes"].tolist(), [0, 1, 2])
         self.assertEqual(loaded["label"].tolist(), [0, 1, 1])
+
+    def test_balance_labels_undersamples_majority_class_for_all_splits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            review_path = tmpdir_path / "reviews.jsonl"
+            output_dir = tmpdir_path / "splits"
+            output_paths = build_output_paths(output_dir)
+            rows = [
+                {"text": f"negative {index}", "helpful_vote": 0}
+                for index in range(6)
+            ] + [
+                {"text": f"positive {index}", "helpful_vote": 1}
+                for index in range(4)
+            ]
+            with review_path.open("w", encoding="utf-8") as handle:
+                for row in rows:
+                    handle.write(json.dumps(row) + "\n")
+
+            stats = scan_dataset(
+                review_path,
+                max_rows=None,
+                positive_threshold=DEFAULT_POSITIVE_THRESHOLD,
+                drop_middle=False,
+                min_review_words=0,
+                log_every_rows=0,
+            )
+            plan = build_split_plan(
+                stats,
+                val_size=0.25,
+                test_size=0.25,
+                balance_labels=True,
+            )
+            assignment_stats = assign_and_write(
+                review_path,
+                stats,
+                plan,
+                output_paths=output_paths,
+                max_rows=None,
+                positive_threshold=DEFAULT_POSITIVE_THRESHOLD,
+                drop_middle=False,
+                min_review_words=0,
+                random_state=42,
+                shuffle_buffer_size=0,
+                log_every_rows=0,
+            )
+
+        self.assertEqual(stats.label_counts, {0: 6, 1: 4})
+        self.assertEqual(plan.train_targets, {0: 2, 1: 2})
+        self.assertEqual(plan.val_targets, {0: 1, 1: 1})
+        self.assertEqual(plan.test_targets, {0: 1, 1: 1})
+        self.assertEqual(assignment_stats.train_label_counts, {0: 2, 1: 2})
+        self.assertEqual(assignment_stats.val_label_counts, {0: 1, 1: 1})
+        self.assertEqual(assignment_stats.test_label_counts, {0: 1, 1: 1})
 
 
 if __name__ == "__main__":

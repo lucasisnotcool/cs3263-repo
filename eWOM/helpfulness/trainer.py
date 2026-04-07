@@ -166,7 +166,7 @@ class HelpfulnessTrainer:
                 for name, candidate in self.model_candidates.items()
             },
             asdict(self.feature_builder.config),
-            list(self.feature_builder.NUMERIC_FEATURE_NAMES),
+            list(self.feature_builder.active_numeric_feature_names),
         )
         LOGGER.info("Fitting helpfulness features on %s training rows", len(train_df))
         x_train = self.feature_builder.fit_transform(train_df)

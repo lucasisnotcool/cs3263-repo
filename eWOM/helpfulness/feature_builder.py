@@ -15,15 +15,24 @@ class HelpfulnessFeatureConfig:
     min_df: int = 5
     max_df: float = 0.95
     ngram_range: tuple[int, int] = (1, 2)
+    use_rating: bool = True
+    use_verified_purchase: bool = True
+    use_text_length_features: bool = True
 
 
 class HelpfulnessFeatureBuilder:
-    NUMERIC_FEATURE_NAMES = (
+    EXTERNAL_METADATA_FEATURE_NAMES = (
         "rating",
         "verified_purchase",
+    )
+    TEXT_LENGTH_FEATURE_NAMES = (
         "review_len_words",
         "title_len_chars",
         "text_len_chars",
+    )
+    NUMERIC_FEATURE_NAMES = (
+        *EXTERNAL_METADATA_FEATURE_NAMES,
+        *TEXT_LENGTH_FEATURE_NAMES,
     )
 
     def __init__(self, config: HelpfulnessFeatureConfig):
@@ -37,13 +46,28 @@ class HelpfulnessFeatureBuilder:
         )
         self.numeric_scaler = MaxAbsScaler()
 
+    @property
+    def active_numeric_feature_names(self) -> tuple[str, ...]:
+        names: list[str] = []
+        if getattr(self.config, "use_rating", True):
+            names.append("rating")
+        if getattr(self.config, "use_verified_purchase", True):
+            names.append("verified_purchase")
+        if getattr(self.config, "use_text_length_features", True):
+            names.extend(self.TEXT_LENGTH_FEATURE_NAMES)
+        return tuple(names)
+
     def fit_transform(self, df: pd.DataFrame) -> csr_matrix:
         text_matrix = self.vectorizer.fit_transform(self._get_texts(df))
+        if not self.active_numeric_feature_names:
+            return text_matrix
         numeric_matrix = self.numeric_scaler.fit_transform(self._build_numeric_matrix(df))
         return hstack([text_matrix, numeric_matrix], format="csr")
 
     def transform(self, df: pd.DataFrame) -> csr_matrix:
         text_matrix = self.vectorizer.transform(self._get_texts(df))
+        if not self.active_numeric_feature_names:
+            return text_matrix
         numeric_matrix = self.numeric_scaler.transform(self._build_numeric_matrix(df))
         return hstack([text_matrix, numeric_matrix], format="csr")
 
@@ -54,7 +78,7 @@ class HelpfulnessFeatureBuilder:
 
     def _build_numeric_matrix(self, df: pd.DataFrame) -> csr_matrix:
         missing_columns = [
-            column for column in self.NUMERIC_FEATURE_NAMES if column not in df.columns
+            column for column in self.active_numeric_feature_names if column not in df.columns
         ]
         if missing_columns:
             raise ValueError(
@@ -62,8 +86,9 @@ class HelpfulnessFeatureBuilder:
                 + ", ".join(missing_columns)
             )
 
-        numeric_df = df.loc[:, list(self.NUMERIC_FEATURE_NAMES)].copy()
-        numeric_df["verified_purchase"] = numeric_df["verified_purchase"].astype(float)
+        numeric_df = df.loc[:, list(self.active_numeric_feature_names)].copy()
+        if "verified_purchase" in numeric_df.columns:
+            numeric_df["verified_purchase"] = numeric_df["verified_purchase"].astype(float)
         values = numeric_df.astype(float).to_numpy(copy=False)
         values = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
         return csr_matrix(values)

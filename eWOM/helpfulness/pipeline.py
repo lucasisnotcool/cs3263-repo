@@ -137,6 +137,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--text-derived-lengths-only",
+        action="store_true",
+        help=(
+            "Use TF-IDF text features plus review/title/text length features only. "
+            "This excludes rating and verified_purchase from training and inference."
+        ),
+    )
+    parser.add_argument(
         "--reuse-existing-artifacts",
         action="store_true",
         help="Skip training and return the existing summary if the model artifacts already exist.",
@@ -266,6 +274,7 @@ def run_pipeline(
     log_level: str = LOG_LEVEL,
     candidate_model_names: list[str] | tuple[str, ...] | None = None,
     positive_threshold: int = DEFAULT_POSITIVE_THRESHOLD,
+    text_derived_lengths_only: bool = False,
     reuse_existing_artifacts: bool = False,
 ) -> dict[str, Any]:
     configure_logging(log_level)
@@ -296,7 +305,7 @@ def run_pipeline(
         return _load_existing_summary(summary_path)
 
     LOGGER.info(
-        "Starting helpfulness pipeline with train_path=%s val_path=%s test_path=%s model_output=%s max_train_rows=%s max_val_rows=%s max_test_rows=%s positive_threshold=%s",
+        "Starting helpfulness pipeline with train_path=%s val_path=%s test_path=%s model_output=%s max_train_rows=%s max_val_rows=%s max_test_rows=%s positive_threshold=%s text_derived_lengths_only=%s",
         resolved_train_path,
         resolved_val_path,
         resolved_test_path,
@@ -305,6 +314,7 @@ def run_pipeline(
         max_val_rows,
         max_test_rows,
         positive_threshold,
+        text_derived_lengths_only,
     )
 
     LOGGER.info("Loading prepared helpfulness train/val/test splits")
@@ -353,6 +363,9 @@ def run_pipeline(
         min_df=min_df,
         max_df=max_df,
         ngram_range=(1, ngram_max),
+        use_rating=not text_derived_lengths_only,
+        use_verified_purchase=not text_derived_lengths_only,
+        use_text_length_features=True,
     )
     LOGGER.info("Using helpfulness feature configuration: %s", feature_config)
     feature_builder = HelpfulnessFeatureBuilder(feature_config)
@@ -404,14 +417,22 @@ def run_pipeline(
             "min_df": min_df,
             "max_df": max_df,
             "ngram_range": [1, ngram_max],
+            "use_rating": feature_config.use_rating,
+            "use_verified_purchase": feature_config.use_verified_purchase,
+            "use_text_length_features": feature_config.use_text_length_features,
         },
-        "numeric_feature_names": list(feature_builder.NUMERIC_FEATURE_NAMES),
+        "numeric_feature_names": list(feature_builder.active_numeric_feature_names),
     }
     _write_json(metadata_path, metadata)
 
+    workflow_architecture = (
+        "TF-IDF + text-derived length features + classifier comparison"
+        if text_derived_lengths_only
+        else "TF-IDF + metadata + classifier comparison"
+    )
     result = {
         "workflow": {
-            "architecture": "TF-IDF + metadata + classifier comparison",
+            "architecture": workflow_architecture,
             "selected_model": trainer.model_name,
             "selected_model_class": (
                 trainer.model.__class__.__name__ if trainer.model is not None else None
@@ -444,6 +465,7 @@ def run_pipeline(
             "log_level": str(log_level).upper(),
             "candidate_models": list(trainer.model_candidates.keys()),
             "positive_threshold": positive_threshold,
+            "text_derived_lengths_only": text_derived_lengths_only,
         },
         "data_summary": {
             "train_load": summarize_loaded_split(resolved_train_path, train_raw_df),
@@ -497,6 +519,7 @@ def main() -> None:
         log_level=args.log_level,
         candidate_model_names=args.candidate_models,
         positive_threshold=args.positive_threshold,
+        text_derived_lengths_only=args.text_derived_lengths_only,
         reuse_existing_artifacts=args.reuse_existing_artifacts,
     )
     print(json.dumps(result, indent=2))

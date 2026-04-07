@@ -24,6 +24,25 @@ python -m eWOM.helpfulness.train_test_splitter \
   --overwrite-output
 ```
 
+For a roughly equal positive/negative helpfulness split, enable majority-label undersampling:
+
+```bash
+python -m eWOM.helpfulness.train_test_splitter \
+  --review-path data/raw/amazon-reviews-2023/Electronics.jsonl \
+  --output-dir data/helpfulness_balanced_8m \
+  --max-rows 20000000 \
+  --val-size 0.1 \
+  --test-size 0.1 \
+  --positive-threshold 1 \
+  --balance-labels \
+  --balanced-total-rows 8000000 \
+  --no-drop-middle \
+  --min-review-words 0 \
+  --overwrite-output
+```
+
+`--balanced-total-rows 8000000` means 4,000,000 helpful and 4,000,000 not-helpful rows across train, val, and test. If the command reports that it found too few helpful rows, increase `--max-rows` or omit `--balanced-total-rows` to use the largest possible balanced subset from the scanned rows.
+
 2. Train Logistic Regression and save a reusable checkpoint:
 
 ```bash
@@ -42,6 +61,8 @@ python -m eWOM.helpfulness.pipeline \
 ```
 
 The training pipeline also relabels prepared rows with `helpful_vote`/`helpful_votes >= 1` when vote counts are present, so older split files built with a higher threshold do not have to be regenerated before retraining.
+
+Use `--text-derived-lengths-only` when inference inputs will not include external metadata. This keeps TF-IDF features and derived `review_len_words`, `title_len_chars`, and `text_len_chars`, but excludes `rating` and `verified_purchase`.
 
 Checkpoint files written by that command:
 

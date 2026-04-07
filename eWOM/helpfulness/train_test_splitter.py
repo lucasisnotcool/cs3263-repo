@@ -38,6 +38,8 @@ DEFAULT_RANDOM_STATE = 42
 DEFAULT_OVERWRITE_OUTPUT = True
 DEFAULT_LOG_EVERY_ROWS = 50_000
 DEFAULT_SHUFFLE_BUFFER_SIZE = 256
+DEFAULT_BALANCE_LABELS = False
+DEFAULT_BALANCED_TOTAL_ROWS = None
 
 
 @dataclass
@@ -159,6 +161,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_LOG_EVERY_ROWS,
         help="Progress logging interval during scan and write passes.",
+    )
+    parser.add_argument(
+        "--balance-labels",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_BALANCE_LABELS,
+        help=(
+            "Whether to undersample majority labels so the generated split files "
+            "have equal label counts before train/val/test allocation."
+        ),
+    )
+    parser.add_argument(
+        "--balanced-total-rows",
+        type=int,
+        default=DEFAULT_BALANCED_TOTAL_ROWS,
+        help=(
+            "Optional total number of rows to emit when --balance-labels is enabled. "
+            "For binary labels this must be even, for example 8000000 for 4M per label."
+        ),
     )
     parser.add_argument(
         "--overwrite-output",
@@ -416,7 +436,55 @@ def allocate_targets(label_counts: Counter[int] | dict[int, int], split_size: fl
     return targets
 
 
-def build_split_plan(stats: ScanStats, *, val_size: float, test_size: float) -> SplitPlan:
+def build_balanced_label_counts(
+    label_counts: Counter[int] | dict[int, int],
+    *,
+    balanced_total_rows: int | None,
+) -> Counter[int]:
+    label_counts = Counter({int(label): int(count) for label, count in label_counts.items()})
+    label_count = len(label_counts)
+    if label_count < 2:
+        raise ValueError("Balancing requires at least two label classes.")
+
+    if balanced_total_rows is None:
+        target_per_label = min(label_counts.values())
+    else:
+        if balanced_total_rows <= 0:
+            raise ValueError("balanced_total_rows must be positive.")
+        if balanced_total_rows % label_count != 0:
+            raise ValueError(
+                "balanced_total_rows must be divisible by the number of label classes."
+            )
+        target_per_label = balanced_total_rows // label_count
+
+    if target_per_label <= 0:
+        raise ValueError("Balanced split target leaves no rows for at least one label.")
+
+    undersized_labels = {
+        label: count for label, count in label_counts.items() if count < target_per_label
+    }
+    if undersized_labels:
+        undersized_str = ", ".join(
+            f"{label}={count:,}" for label, count in sorted(undersized_labels.items())
+        )
+        raise ValueError(
+            "Not enough rows to create the requested balanced split. "
+            f"Need {target_per_label:,} rows per label, but found {undersized_str}. "
+            "Increase --max-rows, lower --balanced-total-rows, or omit --balanced-total-rows "
+            "to use the largest possible balanced subset."
+        )
+
+    return Counter({label: target_per_label for label in label_counts})
+
+
+def build_split_plan(
+    stats: ScanStats,
+    *,
+    val_size: float,
+    test_size: float,
+    balance_labels: bool = DEFAULT_BALANCE_LABELS,
+    balanced_total_rows: int | None = DEFAULT_BALANCED_TOTAL_ROWS,
+) -> SplitPlan:
     if not 0 <= val_size < 1:
         raise ValueError("val_size must be between 0 and 1.")
     if not 0 <= test_size < 1:
@@ -425,17 +493,28 @@ def build_split_plan(stats: ScanStats, *, val_size: float, test_size: float) -> 
         raise ValueError("val_size + test_size must be less than 1.")
     if len(stats.label_counts) < 2:
         raise ValueError("Splitting requires at least two label classes.")
+    if balanced_total_rows is not None and not balance_labels:
+        raise ValueError("--balanced-total-rows requires --balance-labels.")
 
-    test_targets = allocate_targets(stats.label_counts, test_size)
+    planning_label_counts = (
+        build_balanced_label_counts(
+            stats.label_counts,
+            balanced_total_rows=balanced_total_rows,
+        )
+        if balance_labels
+        else stats.label_counts
+    )
+
+    test_targets = allocate_targets(planning_label_counts, test_size)
     remaining_after_test = {
-        label: stats.label_counts[label] - test_targets[label]
-        for label in stats.label_counts
+        label: planning_label_counts[label] - test_targets[label]
+        for label in planning_label_counts
     }
     val_relative_size = 0.0 if val_size == 0 else val_size / (1.0 - test_size)
     val_targets = allocate_targets(remaining_after_test, val_relative_size)
     train_targets = {
         label: remaining_after_test[label] - val_targets[label]
-        for label in stats.label_counts
+        for label in planning_label_counts
     }
 
     if any(count <= 0 for count in train_targets.values()):
@@ -509,9 +588,16 @@ def assign_and_write(
         ),
     }
 
+    target_total_by_label = Counter()
+    for targets in (plan.train_targets, plan.val_targets, plan.test_targets):
+        for label, count in targets.items():
+            target_total_by_label[int(label)] += int(count)
+
+    remaining_available_by_label = {
+        label: int(count) for label, count in stats.label_counts.items()
+    }
     remaining_total_by_label = {
-        label: int(count)
-        for label, count in stats.label_counts.items()
+        label: int(count) for label, count in target_total_by_label.items()
     }
     remaining_val_by_label = {
         label: int(count)
@@ -527,6 +613,10 @@ def assign_and_write(
     }
     split_rngs = {
         label: random.Random(random_state + 10_000 + label)
+        for label in stats.label_counts
+    }
+    selection_rngs = {
+        label: random.Random(random_state + 20_000 + label)
         for label in stats.label_counts
     }
 
@@ -546,8 +636,21 @@ def assign_and_write(
                 continue
 
             label = int(row["label"])
+            remaining_available = remaining_available_by_label[label]
+            remaining_target = remaining_total_by_label.get(label, 0)
+            if remaining_available <= 0:
+                raise RuntimeError("Split assignment saw more rows for a label than expected.")
+
+            select_row = (
+                remaining_target >= remaining_available
+                or selection_rngs[label].randrange(remaining_available) < remaining_target
+            )
+            remaining_available_by_label[label] -= 1
+            if not select_row:
+                continue
+
             chosen_split = choose_split_row(
-                remaining_total=remaining_total_by_label[label],
+                remaining_total=remaining_target,
                 remaining_split_targets={
                     "test": remaining_test_by_label[label],
                     "val": remaining_val_by_label[label],
@@ -580,6 +683,8 @@ def assign_and_write(
 
     if any(value != 0 for value in remaining_total_by_label.values()):
         raise RuntimeError("Split assignment finished with unassigned label totals.")
+    if any(value != 0 for value in remaining_available_by_label.values()):
+        raise RuntimeError("Split assignment finished before all label totals were scanned.")
     if any(value != 0 for value in remaining_test_by_label.values()):
         raise RuntimeError("Split assignment finished with unfilled test quotas.")
     if any(value != 0 for value in remaining_val_by_label.values()):
@@ -618,7 +723,13 @@ def build_summary(
     max_rows: int | None,
     random_state: int,
     shuffle_buffer_size: int,
+    balance_labels: bool,
+    balanced_total_rows: int | None,
 ) -> dict[str, Any]:
+    planned_label_counts = Counter()
+    for targets in (plan.train_targets, plan.val_targets, plan.test_targets):
+        planned_label_counts.update(targets)
+
     return {
         "config": {
             "review_path": str(review_path),
@@ -635,6 +746,8 @@ def build_summary(
             "max_rows": max_rows,
             "random_state": random_state,
             "shuffle_buffer_size": shuffle_buffer_size,
+            "balance_labels": balance_labels,
+            "balanced_total_rows": balanced_total_rows,
         },
         "scan": {
             "raw_rows_seen": int(stats.raw_rows_seen),
@@ -644,6 +757,8 @@ def build_summary(
             "positive_rate": positive_rate(stats.label_counts),
         },
         "split_plan": {
+            "planned_label_counts": counter_to_dict(planned_label_counts),
+            "planned_positive_rate": positive_rate(planned_label_counts),
             "train_targets": {
                 str(label): int(count) for label, count in sorted(plan.train_targets.items())
             },
@@ -666,7 +781,10 @@ def build_summary(
             "test_positive_rate": positive_rate(assignment_stats.test_label_counts),
         },
         "notes": {
-            "method": "Two-pass streamed, label-stratified train/val/test split with buffered shuffle on write.",
+            "method": (
+                "Two-pass streamed, label-stratified train/val/test split with buffered shuffle on write. "
+                "When balance_labels is true, majority labels are undersampled without replacement before split allocation."
+            ),
             "folds": "No fold files are created by this script. Existing fold_* directories are left untouched.",
         },
     }
@@ -704,6 +822,8 @@ def main() -> None:
         stats,
         val_size=args.val_size,
         test_size=args.test_size,
+        balance_labels=args.balance_labels,
+        balanced_total_rows=args.balanced_total_rows,
     )
     assignment_stats = assign_and_write(
         review_path,
@@ -734,6 +854,8 @@ def main() -> None:
         max_rows=args.max_rows,
         random_state=args.random_state,
         shuffle_buffer_size=args.shuffle_buffer_size,
+        balance_labels=args.balance_labels,
+        balanced_total_rows=args.balanced_total_rows,
     )
     write_summary(output_paths["summary"], summary)
 

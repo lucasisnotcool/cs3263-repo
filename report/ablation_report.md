@@ -15,9 +15,9 @@ For both tasks, the same three candidate classifiers were benchmarked:
 
 The goal of the ablation was to identify which classifier works best with the current sparse TF-IDF feature space and to explain why the selected model is more suitable than the alternatives.
 
-The analysis in this report is based on the saved benchmark summaries:
+The analysis in this report is based on the saved model summaries:
 
-- `models/helpfulness/amazon_helpfulness_benchmark_summary.json`
+- `models/helpfulness/amazon_helpfulness_final_summary.json`
 - `models/sentiment/amazon_polarity_full_benchmark_summary.json`
 
 
@@ -87,11 +87,13 @@ The helpfulness dataset is strongly imbalanced.
 
 | Split | Rows | Not Helpful | Helpful | Helpful Rate |
 | --- | ---: | ---: | ---: | ---: |
-| Train | 8,000,000 | 7,453,261 | 546,739 | 6.83% |
-| Validation | 1,000,000 | 931,658 | 68,342 | 6.83% |
-| Test | 1,000,000 | 931,658 | 68,342 | 6.83% |
+| Train | 6,400,000 | 5,952,964 | 447,036 | 6.98% |
+| Validation | 800,000 | 744,120 | 55,880 | 6.98% |
+| Test | 800,000 | 744,120 | 55,880 | 6.98% |
 
 This imbalance is important for interpretation. A model can obtain high raw accuracy simply by predicting the majority class, so macro-F1, minority-class precision, and minority-class recall are more meaningful than accuracy alone.
+
+The final helpfulness run used the already-prepared split files under `data/helpfulness`. Those files retain the existing prepared-label distribution, so the statistics and model metrics below reflect that saved split.
 
 ### 3.2 Sentiment dataset
 
@@ -115,9 +117,9 @@ The helpfulness benchmark compared all three candidate models using their best v
 
 | Model | Threshold | Val Macro-F1 | Val Accuracy | Helpful Precision | Helpful Recall | Helpful F1 | ROC-AUC | Average Precision |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| LR | 0.7961 | 0.6683 | 0.9093 | 0.3591 | 0.4161 | 0.3855 | 0.8427 | 0.3461 |
-| MNB | 0.4009 | 0.6551 | 0.9056 | 0.3359 | 0.3904 | 0.3611 | 0.8177 | 0.3125 |
-| CNB | 0.9012 | 0.6551 | 0.9056 | 0.3359 | 0.3904 | 0.3611 | 0.8177 | 0.3125 |
+| LR | 0.7967 | 0.6693 | 0.9085 | 0.3641 | 0.4152 | 0.3880 | 0.8423 | 0.3481 |
+| MNB | 0.4130 | 0.6569 | 0.9052 | 0.3430 | 0.3900 | 0.3650 | 0.8188 | 0.3156 |
+| CNB | 0.9036 | 0.6569 | 0.9052 | 0.3430 | 0.3900 | 0.3650 | 0.8188 | 0.3156 |
 
 ### 4.2 Test performance of the selected model
 
@@ -125,19 +127,19 @@ The selected helpfulness model was Logistic Regression.
 
 | Metric | Test Value |
 | --- | ---: |
-| Threshold | 0.7961 |
-| Accuracy | 0.9090 |
-| Balanced Accuracy | 0.6804 |
-| Macro-F1 | 0.6676 |
-| Helpful Precision | 0.3575 |
-| Helpful Recall | 0.4156 |
-| Helpful F1 | 0.3844 |
-| ROC-AUC | 0.8418 |
-| Average Precision | 0.3451 |
+| Threshold | 0.7967 |
+| Accuracy | 0.9087 |
+| Balanced Accuracy | 0.6830 |
+| Macro-F1 | 0.6711 |
+| Helpful Precision | 0.3663 |
+| Helpful Recall | 0.4206 |
+| Helpful F1 | 0.3916 |
+| ROC-AUC | 0.8434 |
+| Average Precision | 0.3528 |
 
 ### 4.3 Why Logistic Regression is best for helpfulness
 
-Logistic Regression outperformed both Naive Bayes variants on every important ranking and classification metric used for model selection. On validation, LR improved macro-F1 from `0.6551` to `0.6683`, improved helpful-class F1 from `0.3611` to `0.3855`, improved ROC-AUC from `0.8177` to `0.8427`, and improved average precision from `0.3125` to `0.3461`. These gains are meaningful because the helpfulness task is highly imbalanced and the main challenge is identifying the minority helpful class without flooding the output with false positives.
+Logistic Regression outperformed both Naive Bayes variants on every important ranking and classification metric used for model selection. On validation, LR improved macro-F1 from `0.6569` to `0.6693`, improved helpful-class F1 from `0.3650` to `0.3880`, improved ROC-AUC from `0.8188` to `0.8423`, and improved average precision from `0.3156` to `0.3481`. These gains are meaningful because the helpfulness task is highly imbalanced and the main challenge is identifying the minority helpful class without flooding the output with false positives.
 
 There are several technical reasons why LR is better than MNB and CNB in this setting.
 
@@ -145,11 +147,11 @@ First, the feature space is not a pure bag-of-words count model. The helpfulness
 
 Second, the TF-IDF representation includes unigrams and bigrams. These features are highly correlated. For example, single words and phrase-level bigrams often co-occur and partially duplicate information. Naive Bayes assumes conditional independence among features given the class label, and that assumption is clearly violated in this representation. Logistic Regression does not require that assumption and can learn to down-weight redundant features more effectively.
 
-Third, the helpfulness task is heavily skewed toward the negative class. The LR model uses `class_weight="balanced"` and then further tunes the decision threshold on the validation set. That combination is especially important here. At the default threshold of `0.5`, LR produced very high helpful recall (`0.7476`) but poor helpful precision (`0.2010`), meaning it predicted too many reviews as helpful. After threshold tuning to `0.7961`, the predicted positive rate dropped from `25.42%` to `7.92%`, much closer to the true helpful rate of `6.83%`. This substantially improved minority-class precision while keeping enough recall to maximize macro-F1. MNB and CNB also benefited from threshold tuning, but even after tuning they still lagged behind LR.
+Third, the helpfulness task is heavily skewed toward the negative class. The LR model uses `class_weight="balanced"` and then further tunes the decision threshold on the validation set. That combination is especially important here. At the default threshold of `0.5`, LR produced very high helpful recall (`0.7470`) but poor helpful precision (`0.2049`), meaning it predicted too many reviews as helpful. After threshold tuning to `0.7967`, the predicted positive rate dropped from `25.46%` to `7.96%`, much closer to the true helpful rate of `6.98%`. This substantially improved minority-class precision while keeping enough recall to maximize macro-F1. MNB and CNB also benefited from threshold tuning, but even after tuning they still lagged behind LR.
 
 Fourth, CNB provided no practical advantage over MNB in this experiment. Their selected-threshold validation metrics are effectively identical. CNB is often useful for imbalanced text classification, but here its complement-based correction was not enough to overcome the broader limitations of Naive Bayes on correlated TF-IDF features and mixed metadata inputs.
 
-Finally, the selected LR model generalizes well. The train macro-F1 was `0.6765`, the validation macro-F1 was `0.6683`, and the test macro-F1 was `0.6676`. This small gap suggests that the LR model is not merely fitting the training data more aggressively; it is learning a decision boundary that transfers well to held-out data.
+Finally, the selected LR model generalizes well. The train macro-F1 was `0.6785`, the validation macro-F1 was `0.6693`, and the test macro-F1 was `0.6711`. This small gap suggests that the LR model is not merely fitting the training data more aggressively; it is learning a decision boundary that transfers well to held-out data.
 
 
 ## 5. Sentiment Ablation Results

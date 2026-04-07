@@ -29,6 +29,22 @@ def _iter_jsonl(path: Path) -> Iterator[dict]:
                     yield json.loads(line)
 
 
+def _coerce_int(value, default: int = 0) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return int(value)
+    try:
+        if pd.isna(value):
+            return default
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 class AmazonReviewsLoader:
     """
     Loads Amazon Reviews'23 review JSONL or JSONL.GZ files.
@@ -80,19 +96,32 @@ class PreparedHelpfulnessSplitLoader:
     needed by the TF-IDF + logistic regression pipeline.
     """
 
-    def __init__(self, split_path: str | Path, max_rows: Optional[int] = None):
+    def __init__(
+        self,
+        split_path: str | Path,
+        max_rows: Optional[int] = None,
+        positive_threshold: int | None = None,
+    ):
         self.split_path = Path(split_path)
         self.max_rows = max_rows
+        self.positive_threshold = positive_threshold
 
     def iter_rows(self) -> Iterator[dict]:
         loaded_rows = 0
         for obj in _iter_jsonl(self.split_path):
+            helpful_votes_raw = obj.get("helpful_votes", obj.get("helpful_vote"))
+            helpful_votes = _coerce_int(helpful_votes_raw, default=0)
+            label = obj.get("label")
+            if self.positive_threshold is not None and helpful_votes_raw is not None:
+                label = int(helpful_votes >= self.positive_threshold)
+
             yield {
                 "rating": obj.get("rating"),
                 "title": obj.get("title", ""),
                 "text": obj.get("text", ""),
                 "verified_purchase": obj.get("verified_purchase", False),
-                "label": obj.get("label"),
+                "helpful_votes": helpful_votes,
+                "label": label,
             }
             loaded_rows += 1
             if self.max_rows is not None and loaded_rows >= self.max_rows:

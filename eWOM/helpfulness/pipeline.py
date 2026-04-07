@@ -18,6 +18,7 @@ from eWOM.helpfulness.feature_builder import (
 )
 from eWOM.helpfulness.preprocess import HelpfulnessPreprocessor
 from eWOM.helpfulness.trainer import HelpfulnessTrainer, build_default_model_candidates
+from eWOM.helpfulness.train_test_splitter import DEFAULT_POSITIVE_THRESHOLD
 
 
 LOGGER = logging.getLogger(__name__)
@@ -125,6 +126,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=CANDIDATE_MODEL_NAMES,
         default=list(CANDIDATE_MODEL_NAMES),
         help="Candidate model names to train and compare on the validation split.",
+    )
+    parser.add_argument(
+        "--positive-threshold",
+        type=int,
+        default=DEFAULT_POSITIVE_THRESHOLD,
+        help=(
+            "When prepared rows include helpful_votes/helpful_vote, minimum vote count "
+            "used to relabel a review as helpful."
+        ),
     )
     parser.add_argument(
         "--reuse-existing-artifacts",
@@ -255,6 +265,7 @@ def run_pipeline(
     random_state: int = RANDOM_STATE,
     log_level: str = LOG_LEVEL,
     candidate_model_names: list[str] | tuple[str, ...] | None = None,
+    positive_threshold: int = DEFAULT_POSITIVE_THRESHOLD,
     reuse_existing_artifacts: bool = False,
 ) -> dict[str, Any]:
     configure_logging(log_level)
@@ -285,7 +296,7 @@ def run_pipeline(
         return _load_existing_summary(summary_path)
 
     LOGGER.info(
-        "Starting helpfulness pipeline with train_path=%s val_path=%s test_path=%s model_output=%s max_train_rows=%s max_val_rows=%s max_test_rows=%s",
+        "Starting helpfulness pipeline with train_path=%s val_path=%s test_path=%s model_output=%s max_train_rows=%s max_val_rows=%s max_test_rows=%s positive_threshold=%s",
         resolved_train_path,
         resolved_val_path,
         resolved_test_path,
@@ -293,12 +304,25 @@ def run_pipeline(
         max_train_rows,
         max_val_rows,
         max_test_rows,
+        positive_threshold,
     )
 
     LOGGER.info("Loading prepared helpfulness train/val/test splits")
-    train_loader = PreparedHelpfulnessSplitLoader(resolved_train_path, max_rows=max_train_rows)
-    val_loader = PreparedHelpfulnessSplitLoader(resolved_val_path, max_rows=max_val_rows)
-    test_loader = PreparedHelpfulnessSplitLoader(resolved_test_path, max_rows=max_test_rows)
+    train_loader = PreparedHelpfulnessSplitLoader(
+        resolved_train_path,
+        max_rows=max_train_rows,
+        positive_threshold=positive_threshold,
+    )
+    val_loader = PreparedHelpfulnessSplitLoader(
+        resolved_val_path,
+        max_rows=max_val_rows,
+        positive_threshold=positive_threshold,
+    )
+    test_loader = PreparedHelpfulnessSplitLoader(
+        resolved_test_path,
+        max_rows=max_test_rows,
+        positive_threshold=positive_threshold,
+    )
     train_raw_df = train_loader.load()
     val_raw_df = val_loader.load()
     test_raw_df = test_loader.load()
@@ -374,6 +398,7 @@ def run_pipeline(
         "model_class": trainer.model.__class__.__name__ if trainer.model is not None else None,
         "threshold": float(trainer.threshold),
         "label_text_by_id": LABEL_TEXT_BY_ID,
+        "positive_threshold": positive_threshold,
         "feature_config": {
             "max_features": max_features,
             "min_df": min_df,
@@ -418,6 +443,7 @@ def run_pipeline(
             "ngram_range": [1, ngram_max],
             "log_level": str(log_level).upper(),
             "candidate_models": list(trainer.model_candidates.keys()),
+            "positive_threshold": positive_threshold,
         },
         "data_summary": {
             "train_load": summarize_loaded_split(resolved_train_path, train_raw_df),
@@ -470,6 +496,7 @@ def main() -> None:
         random_state=args.random_state,
         log_level=args.log_level,
         candidate_model_names=args.candidate_models,
+        positive_threshold=args.positive_threshold,
         reuse_existing_artifacts=args.reuse_existing_artifacts,
     )
     print(json.dumps(result, indent=2))

@@ -18,7 +18,7 @@ python -m eWOM.helpfulness.train_test_splitter \
   --max-rows 10000000 \
   --val-size 0.1 \
   --test-size 0.1 \
-  --positive-threshold 3 \
+  --positive-threshold 1 \
   --no-drop-middle \
   --min-review-words 0 \
   --overwrite-output
@@ -40,6 +40,8 @@ python -m eWOM.helpfulness.pipeline \
   --random-state 42 \
   --log-level INFO
 ```
+
+The training pipeline also relabels prepared rows with `helpful_vote`/`helpful_votes >= 1` when vote counts are present, so older split files built with a higher threshold do not have to be regenerated before retraining.
 
 Checkpoint files written by that command:
 

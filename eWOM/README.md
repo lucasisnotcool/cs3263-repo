@@ -258,6 +258,7 @@ Notes:
 
 - this CLI creates `train.jsonl`, `val.jsonl`, `test.jsonl`, and `split_summary.json`
 - the split is label-stratified and randomized
+- by default, reviews with `helpful_vote`/`helpful_votes >= 1` are labeled helpful
 - the main knobs are `--review-path`, `--output-dir`, `--val-size`, and `--test-size`
 
 Implementation:
@@ -275,6 +276,7 @@ python -m eWOM.helpfulness.pipeline --help
 Notes:
 
 - this trains and evaluates the helpfulness branch from explicit `train/val/test` files
+- when prepared rows include `helpful_vote`/`helpful_votes`, the default helpful label threshold is `>= 1`
 - it writes model artifacts, metadata, and summary JSON under `models/helpfulness`
 - the main knobs are `--train-path`, `--val-path`, `--test-path`, `--model-output`, and `--candidate-models`
 - `--reuse-existing-artifacts` skips fitting and returns the stored summary when the checkpoint files already exist

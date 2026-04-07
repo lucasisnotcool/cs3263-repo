@@ -6,32 +6,84 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Inference commands are in `eWOM/inference.md`.
+
 ---
 
 # Helpfulness
 
-1. Split dataset
+## 1. Split Dataset
+
+Balancing is enabled by default. `--balanced-total-rows 8000000` requests a fixed 4,000,000 helpful / 4,000,000 not-helpful split. Omit it to use the largest balanced subset available from the scanned rows.
+
 ```bash
 python -m eWOM.helpfulness.train_test_splitter \
   --review-path data/raw/amazon-reviews-2023/Electronics.jsonl \
   --output-dir data/helpfulness \
-  --max-rows 10000000 \
+  --max-rows 20000000 \
   --val-size 0.1 \
   --test-size 0.1 \
-  --positive-threshold 3 \
+  --positive-threshold 1 \
+  --balanced-total-rows 8000000 \
   --no-drop-middle \
   --min-review-words 0 \
   --overwrite-output
 ```
 
-2. Train Logistic Regression and save a reusable checkpoint:
+## 2. Train All Helpfulness Candidates
 
 ```bash
 python -m eWOM.helpfulness.pipeline \
   --train-path data/helpfulness/train.jsonl \
   --val-path data/helpfulness/val.jsonl \
   --test-path data/helpfulness/test.jsonl \
-  --model-output models/helpfulness/amazon_helpfulness_lr \
+  --model-output models/helpfulness/amazon_helpfulness \
+  --candidate-models logistic_regression multinomial_nb complement_nb \
+  --max-features 50000 \
+  --min-df 5 \
+  --max-df 0.95 \
+  --ngram-max 2 \
+  --random-state 42 \
+  --log-level INFO
+```
+
+By default, the terminal prints a compact table with candidate metrics and selected model metrics. The full JSON summary is still written to `models/helpfulness/amazon_helpfulness_summary.json`. Use `--output-format json` only if you need JSON printed to stdout. Use `--log-level WARNING` if you want less progress logging and mostly the final table.
+
+The default helpfulness feature set is TF-IDF text plus derived `review_len_words`, `title_len_chars`, and `text_len_chars`. It excludes `rating` and `verified_purchase`; use `--no-text-derived-lengths-only` only for legacy metadata-inclusive experiments.
+
+The training command relabels prepared rows with `helpful_vote`/`helpful_votes >= 1` when vote counts are present. It trains Logistic Regression, Multinomial Naive Bayes, and Complement Naive Bayes; selects the best model on validation `macro_f1`; saves the selected model at the main prefix; and saves every candidate at a suffixed prefix.
+
+Main selected checkpoint:
+
+- `models/helpfulness/amazon_helpfulness.joblib`
+- `models/helpfulness/amazon_helpfulness_feature_builder.joblib`
+
+Per-candidate checkpoints:
+
+- `models/helpfulness/amazon_helpfulness_logistic_regression.joblib`
+- `models/helpfulness/amazon_helpfulness_logistic_regression_feature_builder.joblib`
+- `models/helpfulness/amazon_helpfulness_multinomial_nb.joblib`
+- `models/helpfulness/amazon_helpfulness_multinomial_nb_feature_builder.joblib`
+- `models/helpfulness/amazon_helpfulness_complement_nb.joblib`
+- `models/helpfulness/amazon_helpfulness_complement_nb_feature_builder.joblib`
+
+Metadata and summary:
+
+- `models/helpfulness/amazon_helpfulness_metadata.json`
+- `models/helpfulness/amazon_helpfulness_summary.json`
+
+## Helpfulness FAQ
+
+### Can I Train Only One Candidate Model?
+
+Yes. Keep the same command and change `--candidate-models` to one model name:
+
+```bash
+python -m eWOM.helpfulness.pipeline \
+  --train-path data/helpfulness/train.jsonl \
+  --val-path data/helpfulness/val.jsonl \
+  --test-path data/helpfulness/test.jsonl \
+  --model-output models/helpfulness/amazon_helpfulness_single_lr \
   --candidate-models logistic_regression \
   --max-features 50000 \
   --min-df 5 \
@@ -41,255 +93,52 @@ python -m eWOM.helpfulness.pipeline \
   --log-level INFO
 ```
 
-Checkpoint files written by that command:
+Allowed candidate names are `logistic_regression`, `multinomial_nb`, and `complement_nb`.
 
-- `models/helpfulness/amazon_helpfulness_lr.joblib`
-- `models/helpfulness/amazon_helpfulness_lr_feature_builder.joblib`
-- `models/helpfulness/amazon_helpfulness_lr_metadata.json`
-- `models/helpfulness/amazon_helpfulness_lr_summary.json`
+### Can I Continue Training?
 
-Reuse the saved checkpoint without retraining:
+The current helpfulness pipeline does not incrementally continue training from an old checkpoint. It either retrains from the split files or reuses an existing checkpoint. To skip retraining when artifacts already exist, run:
 
 ```bash
 python -m eWOM.helpfulness.pipeline \
-  --model-output models/helpfulness/amazon_helpfulness_lr \
+  --model-output models/helpfulness/amazon_helpfulness \
   --reuse-existing-artifacts
 ```
 
-Run direct helpfulness inference from the saved checkpoint:
+To retrain, run the main training command again with the same `--model-output` to replace that checkpoint, or use a new `--model-output` prefix to keep both runs.
+
+### Can I Use Metadata Features Again?
+
+Yes, but only for legacy experiments where inference will also provide `rating` and `verified_purchase`. Add:
 
 ```bash
-python -m eWOM.helpfulness.run_helpfulness_inference \
-  --model-prefix models/helpfulness/amazon_helpfulness_lr \
-  --title "Useful and balanced review" \
-  --text "Detailed pros and cons, setup notes, and long-term battery observations." \
-  --rating 4 \
-  --verified-purchase
+--no-text-derived-lengths-only
 ```
 
-3. Train Multinomial Naive Bayes:
-```bash
-python -m eWOM.helpfulness.pipeline \
-  --train-path data/helpfulness/train.jsonl \
-  --val-path data/helpfulness/val.jsonl \
-  --test-path data/helpfulness/test.jsonl \
-  --model-output models/helpfulness/amazon_helpfulness_multinomial_nb \
-  --candidate-models multinomial_nb \
-  --max-features 50000 \
-  --min-df 5 \
-  --max-df 0.95 \
-  --ngram-max 2 \
-  --random-state 42 \
-  --log-level INFO
-```
+### Can I Create An Unbalanced Split?
 
-Reuse the saved checkpoint without retraining:
+Yes. Balanced splitting is the default; add `--no-balance-labels` to keep the original class distribution:
 
 ```bash
-python -m eWOM.helpfulness.pipeline \
-  --model-output models/helpfulness/amazon_helpfulness_multinomial_nb \
-  --reuse-existing-artifacts
-```
-
-Run direct helpfulness inference:
-
-```bash
-python -m eWOM.helpfulness.run_helpfulness_inference \
-  --model-prefix models/helpfulness/amazon_helpfulness_multinomial_nb \
-  --text "Step-by-step usage notes with clear pros and cons."
-```
-
-4. Train Complement Naive Bayes:
-```bash
-python -m eWOM.helpfulness.pipeline \
-  --train-path data/helpfulness/train.jsonl \
-  --val-path data/helpfulness/val.jsonl \
-  --test-path data/helpfulness/test.jsonl \
-  --model-output models/helpfulness/amazon_helpfulness_complement_nb \
-  --candidate-models complement_nb \
-  --max-features 50000 \
-  --min-df 5 \
-  --max-df 0.95 \
-  --ngram-max 2 \
-  --random-state 42 \
-  --log-level INFO
-```
-
-Train all
-```bash
-python -m eWOM.helpfulness.pipeline \
-  --train-path data/helpfulness/train.jsonl \
-  --val-path data/helpfulness/val.jsonl \
-  --test-path data/helpfulness/test.jsonl \
-  --model-output models/helpfulness/amazon_helpfulness_benchmark \
-  --candidate-models logistic_regression multinomial_nb complement_nb \
-  --max-features 50000 \
-  --min-df 5 \
-  --max-df 0.95 \
-  --ngram-max 2 \
-  --random-state 42 \
-  --log-level INFO
-```
-
-Reuse the saved checkpoint without retraining:
-
-```bash
-python -m eWOM.helpfulness.pipeline \
-  --model-output models/helpfulness/amazon_helpfulness_complement_nb \
-  --reuse-existing-artifacts
-```
-
-Run direct helpfulness inference:
-
-```bash
-python -m eWOM.helpfulness.run_helpfulness_inference \
-  --model-prefix models/helpfulness/amazon_helpfulness_complement_nb \
-  --text "Honest comparison with concrete buying advice."
-```
-
-5. Run the helpfulness benchmark across all three:
-```bash
-python -m eWOM.helpfulness.pipeline \
-  --train-path data/helpfulness/train.jsonl \
-  --val-path data/helpfulness/val.jsonl \
-  --test-path data/helpfulness/test.jsonl \
-  --model-output models/helpfulness/amazon_helpfulness_benchmark \
-  --candidate-models logistic_regression multinomial_nb complement_nb \
-  --max-features 50000 \
-  --min-df 5 \
-  --max-df 0.95 \
-  --ngram-max 2 \
-  --random-state 42 \
-  --log-level INFO
-```
-
-This benchmark command trains the listed candidates on the `train` split, compares them on the `val` split, saves the selected checkpoint under `models/helpfulness/amazon_helpfulness_benchmark*`, and evaluates the selected checkpoint on `test`.
-
-Reuse the selected benchmark checkpoint without retraining:
-
-```bash
-python -m eWOM.helpfulness.pipeline \
-  --model-output models/helpfulness/amazon_helpfulness_benchmark \
-  --reuse-existing-artifacts
-```
-
-Run direct helpfulness inference from the selected benchmark checkpoint:
-
-```bash
-python -m eWOM.helpfulness.run_helpfulness_inference \
-  --model-prefix models/helpfulness/amazon_helpfulness_benchmark \
-  --text "Detailed buying guide with concrete strengths, weaknesses, and durability notes."
+python -m eWOM.helpfulness.train_test_splitter \
+  --review-path data/raw/amazon-reviews-2023/Electronics.jsonl \
+  --output-dir data/helpfulness_unbalanced \
+  --max-rows 20000000 \
+  --positive-threshold 1 \
+  --no-balance-labels \
+  --overwrite-output
 ```
 
 ---
 
 # Sentiment Analysis
 
-1. Train sentiment Logistic Regression and save a reusable checkpoint:
+## Train All Sentiment Candidates
+
 ```bash
 python -m eWOM.sentiment_analysis.run_sentiment_benchmark \
   --data-dir data/raw/amazon_polarity \
-  --model-output models/sentiment/amazon_polarity_lr \
-  --val-ratio 0.1 \
-  --candidate-models logistic_regression \
-  --max-features 50000 \
-  --min-df 5 \
-  --max-df 0.95 \
-  --ngram-max 2 \
-  --random-state 42 \
-  --log-level INFO
-```
-
-Checkpoint files written by that command:
-
-- `models/sentiment/amazon_polarity_lr.joblib`
-- `models/sentiment/amazon_polarity_lr_feature_builder.joblib`
-- `models/sentiment/amazon_polarity_lr_metadata.json`
-- `models/sentiment/amazon_polarity_lr_summary.json`
-
-Reuse the saved checkpoint without retraining:
-
-```bash
-python -m eWOM.sentiment_analysis.run_sentiment_benchmark \
-  --model-output models/sentiment/amazon_polarity_lr \
-  --reuse-existing-artifacts
-```
-
-Run direct sentiment inference from the saved checkpoint:
-
-```bash
-python -m eWOM.sentiment_analysis.run_sentiment_inference \
-  --model-prefix models/sentiment/amazon_polarity_lr \
-  --text "Battery life is excellent and setup was easy."
-```
-
-2. Train sentiment Multinomial Naive Bayes:
-```bash
-python -m eWOM.sentiment_analysis.run_sentiment_benchmark \
-  --data-dir data/raw/amazon_polarity \
-  --model-output models/sentiment/amazon_polarity_multinomial_nb \
-  --val-ratio 0.1 \
-  --candidate-models multinomial_nb \
-  --max-features 50000 \
-  --min-df 5 \
-  --max-df 0.95 \
-  --ngram-max 2 \
-  --random-state 42 \
-  --log-level INFO
-```
-
-Reuse the saved checkpoint without retraining:
-
-```bash
-python -m eWOM.sentiment_analysis.run_sentiment_benchmark \
-  --model-output models/sentiment/amazon_polarity_multinomial_nb \
-  --reuse-existing-artifacts
-```
-
-Run direct sentiment inference:
-
-```bash
-python -m eWOM.sentiment_analysis.run_sentiment_inference \
-  --model-prefix models/sentiment/amazon_polarity_multinomial_nb \
-  --text "This was disappointing and stopped working after two days."
-```
-
-3. Train sentiment Complement Naive Bayes:
-```bash
-python -m eWOM.sentiment_analysis.run_sentiment_benchmark \
-  --data-dir data/raw/amazon_polarity \
-  --model-output models/sentiment/amazon_polarity_complement_nb \
-  --val-ratio 0.1 \
-  --candidate-models complement_nb \
-  --max-features 50000 \
-  --min-df 5 \
-  --max-df 0.95 \
-  --ngram-max 2 \
-  --random-state 42 \
-  --log-level INFO
-```
-
-Reuse the saved checkpoint without retraining:
-
-```bash
-python -m eWOM.sentiment_analysis.run_sentiment_benchmark \
-  --model-output models/sentiment/amazon_polarity_complement_nb \
-  --reuse-existing-artifacts
-```
-
-Run direct sentiment inference:
-
-```bash
-python -m eWOM.sentiment_analysis.run_sentiment_inference \
-  --model-prefix models/sentiment/amazon_polarity_complement_nb \
-  --text "The quality is solid and I would buy it again."
-```
-
-4. Run the sentiment benchmark across all three:
-```bash
-python -m eWOM.sentiment_analysis.run_sentiment_benchmark \
-  --data-dir data/raw/amazon_polarity \
-  --model-output models/sentiment/amazon_polarity_full_benchmark \
+  --model-output models/sentiment/amazon_polarity \
   --val-ratio 0.1 \
   --candidate-models logistic_regression multinomial_nb complement_nb \
   --max-features 50000 \
@@ -300,31 +149,59 @@ python -m eWOM.sentiment_analysis.run_sentiment_benchmark \
   --log-level INFO
 ```
 
-This benchmark command trains the listed candidates on the Amazon Polarity `train` split, compares them on the internal `val` split, saves the selected checkpoint under `models/sentiment/amazon_polarity_full_benchmark*`, and evaluates the selected checkpoint on the official `test` split.
+By default, the terminal prints a compact table with candidate metrics and selected model metrics. The full JSON summary is still written to `models/sentiment/amazon_polarity_summary.json`. Use `--output-format json` only if you need JSON printed to stdout. Use `--log-level WARNING` if you want less progress logging and mostly the final table.
 
-Reuse the selected benchmark checkpoint without retraining:
+This command trains Logistic Regression, Multinomial Naive Bayes, and Complement Naive Bayes on the Amazon Polarity `train` split; compares them on the internal validation split; saves the selected model at the main prefix; saves every candidate at a suffixed prefix; and evaluates the selected model on the official `test` split.
+
+Main selected checkpoint:
+
+- `models/sentiment/amazon_polarity.joblib`
+- `models/sentiment/amazon_polarity_feature_builder.joblib`
+
+Per-candidate checkpoints:
+
+- `models/sentiment/amazon_polarity_logistic_regression.joblib`
+- `models/sentiment/amazon_polarity_logistic_regression_feature_builder.joblib`
+- `models/sentiment/amazon_polarity_multinomial_nb.joblib`
+- `models/sentiment/amazon_polarity_multinomial_nb_feature_builder.joblib`
+- `models/sentiment/amazon_polarity_complement_nb.joblib`
+- `models/sentiment/amazon_polarity_complement_nb_feature_builder.joblib`
+
+Metadata and summary:
+
+- `models/sentiment/amazon_polarity_metadata.json`
+- `models/sentiment/amazon_polarity_summary.json`
+
+## Sentiment FAQ
+
+### Can I Train Only One Candidate Model?
+
+Yes. Keep the same command and change `--candidate-models` to one model name:
 
 ```bash
 python -m eWOM.sentiment_analysis.run_sentiment_benchmark \
-  --model-output models/sentiment/amazon_polarity_full_benchmark \
+  --data-dir data/raw/amazon_polarity \
+  --model-output models/sentiment/amazon_polarity_single_lr \
+  --val-ratio 0.1 \
+  --candidate-models logistic_regression \
+  --max-features 50000 \
+  --min-df 5 \
+  --max-df 0.95 \
+  --ngram-max 2 \
+  --random-state 42 \
+  --log-level INFO
+```
+
+Allowed candidate names are `logistic_regression`, `multinomial_nb`, and `complement_nb`.
+
+### Can I Continue Training?
+
+The current sentiment benchmark pipeline does not incrementally continue training from an old checkpoint. It either retrains from the dataset or reuses an existing checkpoint. To skip retraining when artifacts already exist, run:
+
+```bash
+python -m eWOM.sentiment_analysis.run_sentiment_benchmark \
+  --model-output models/sentiment/amazon_polarity \
   --reuse-existing-artifacts
 ```
 
-Run direct sentiment inference from the selected benchmark checkpoint:
-
-```bash
-python -m eWOM.sentiment_analysis.run_sentiment_inference \
-  --model-prefix models/sentiment/amazon_polarity_full_benchmark \
-  --text "Battery life is excellent and setup was easy."
-```
-
----
-
-# No-Retrain Workflow
-
-Train once to create the checkpoint. After that, do one of these:
-
-- Reuse the saved artifacts with `--reuse-existing-artifacts` when you want the stored summary and metadata without fitting again.
-- Use `python -m eWOM.helpfulness.run_helpfulness_inference ...` for helpfulness predictions.
-- Use `python -m eWOM.sentiment_analysis.run_sentiment_inference ...` for sentiment predictions.
-- Use `python -m eWOM.run_fusion_demo ...` with explicit model paths if you want full eWOM scoring from the saved helpfulness and sentiment checkpoints.
+To retrain, run the main training command again with the same `--model-output` to replace that checkpoint, or use a new `--model-output` prefix to keep both runs.

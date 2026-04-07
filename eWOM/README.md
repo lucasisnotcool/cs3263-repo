@@ -19,24 +19,31 @@ The current agent is a Python package, not an installed console app or web servi
 - Deception model adapter: `eWOM/deception`
 - Fusion layer: `eWOM/fusion`
 
+Operational docs:
+
+- Training and splitting: `eWOM/training.md`
+- Inference and scoring: `eWOM/inference.md`
+
 The default runtime artifact paths are:
 
-- `models/helpfulness/amazon_helpfulness_electronics_tfidf_lr.joblib`
-- `models/helpfulness/amazon_helpfulness_electronics_tfidf_lr_feature_builder.joblib`
-- `models/sentiment/amazon_polarity_baseline.joblib`
-- `models/sentiment/amazon_polarity_baseline_feature_builder.joblib`
+- `models/helpfulness/amazon_helpfulness_logistic_regression.joblib`
+- `models/helpfulness/amazon_helpfulness_logistic_regression_feature_builder.joblib`
+- `models/sentiment/amazon_polarity_logistic_regression.joblib`
+- `models/sentiment/amazon_polarity_logistic_regression_feature_builder.joblib`
+
+These runtime defaults are pinned to the LR candidate artifacts. Training still writes unsuffixed selected-model artifacts such as `models/helpfulness/amazon_helpfulness.joblib` and per-candidate artifacts for comparison.
 
 ## Architecture
 
 ### 1. Helpfulness
 
-The helpfulness branch uses TF-IDF text features plus metadata features such as:
+The helpfulness branch uses TF-IDF text features plus text-derived length features:
 
-- `rating`
-- `verified_purchase`
 - `review_len_words`
 - `title_len_chars`
 - `text_len_chars`
+
+External metadata fields such as `rating` and `verified_purchase` are excluded by default because the runtime input may not provide them.
 
 The current helpfulness training pipeline compares three classifier candidates:
 
@@ -47,16 +54,16 @@ The current helpfulness training pipeline compares three classifier candidates:
 Model selection is done on the validation split with `macro_f1` as the primary metric, then `average_precision`, `roc_auc`, and `balanced_accuracy` as tiebreakers. The checked-in helpfulness metadata currently shows:
 
 - selected model: `logistic_regression`
-- selected threshold: `0.7515016646130513`
+- selected threshold: `0.4918036968495278`
 
 References:
 
 - `eWOM/helpfulness/trainer.py`
-- `models/helpfulness/amazon_helpfulness_electronics_tfidf_lr_metadata.json`
+- `models/helpfulness/amazon_helpfulness_metadata.json`
 
 ### 2. Sentiment
 
-The default sentiment runtime model is a logistic-regression classifier over TF-IDF text features. The predictor returns:
+The default sentiment runtime model is the benchmark-selected TF-IDF classifier. The predictor returns:
 
 - `negative_probability`
 - `positive_probability`
@@ -66,7 +73,7 @@ The default sentiment runtime model is a logistic-regression classifier over TF-
 References:
 
 - `eWOM/sentiment_analysis/predictor.py`
-- `models/sentiment/amazon_polarity_baseline.joblib`
+- `models/sentiment/amazon_polarity_logistic_regression.joblib`
 
 ### 3. Deception
 
@@ -129,6 +136,8 @@ Optional request fields:
 - `rating`
 - `verified_purchase`
 
+The default helpfulness model ignores `rating` and `verified_purchase`; they remain accepted for legacy artifact compatibility.
+
 Response shape:
 
 ```json
@@ -176,9 +185,7 @@ The example above was produced by the current default artifacts using:
 
 ```bash
 python -m eWOM.run_fusion_demo \
-  --text "Battery life is excellent and setup was easy." \
-  --rating 5 \
-  --verified-purchase
+  --text "Battery life is excellent and setup was easy."
 ```
 
 ## Python Usage
@@ -190,8 +197,6 @@ result = score_review(
     {
         "title": "Useful and reliable",
         "text": "Battery life is excellent and setup was easy.",
-        "rating": 5.0,
-        "verified_purchase": True,
     }
 )
 
@@ -206,10 +211,10 @@ from eWOM import EWOMModelPaths, score_review
 result = score_review(
     {"text": "Detailed buying guide with clear pros and cons."},
     model_paths=EWOMModelPaths(
-        helpfulness_model_path="models/helpfulness/amazon_helpfulness_electronics_tfidf_lr.joblib",
-        helpfulness_feature_builder_path="models/helpfulness/amazon_helpfulness_electronics_tfidf_lr_feature_builder.joblib",
-        sentiment_model_path="models/sentiment/amazon_polarity_baseline.joblib",
-        sentiment_feature_builder_path="models/sentiment/amazon_polarity_baseline_feature_builder.joblib",
+        helpfulness_model_path="models/helpfulness/amazon_helpfulness_logistic_regression.joblib",
+        helpfulness_feature_builder_path="models/helpfulness/amazon_helpfulness_logistic_regression_feature_builder.joblib",
+        sentiment_model_path="models/sentiment/amazon_polarity_logistic_regression.joblib",
+        sentiment_feature_builder_path="models/sentiment/amazon_polarity_logistic_regression_feature_builder.joblib",
     ),
 )
 ```
@@ -259,7 +264,7 @@ Notes:
 - this CLI creates `train.jsonl`, `val.jsonl`, `test.jsonl`, and `split_summary.json`
 - the split is label-stratified and randomized
 - by default, reviews with `helpful_vote`/`helpful_votes >= 1` are labeled helpful
-- `--balance-labels` undersamples majority labels, and `--balanced-total-rows` can request a fixed balanced total such as 8,000,000 rows
+- balancing is enabled by default; `--balanced-total-rows` can request a fixed balanced total such as 8,000,000 rows
 - the main knobs are `--review-path`, `--output-dir`, `--val-size`, and `--test-size`
 
 Implementation:
@@ -278,9 +283,11 @@ Notes:
 
 - this trains and evaluates the helpfulness branch from explicit `train/val/test` files
 - when prepared rows include `helpful_vote`/`helpful_votes`, the default helpful label threshold is `>= 1`
-- `--text-derived-lengths-only` keeps TF-IDF plus derived text length features and excludes `rating` and `verified_purchase`
-- it writes model artifacts, metadata, and summary JSON under `models/helpfulness`
+- TF-IDF plus derived text length features are the default; use `--no-text-derived-lengths-only` only for legacy metadata-inclusive experiments
+- it writes the selected model artifact, per-candidate model artifacts, metadata, and summary JSON under `models/helpfulness`
 - the main knobs are `--train-path`, `--val-path`, `--test-path`, `--model-output`, and `--candidate-models`
+- the terminal output is a compact metric table by default; use `--output-format json` for JSON stdout
+- use `--log-level WARNING` if you want less progress logging and mostly the final table
 - `--reuse-existing-artifacts` skips fitting and returns the stored summary when the checkpoint files already exist
 
 Implementation:
@@ -298,31 +305,23 @@ python -m eWOM.helpfulness.run_helpfulness_inference --help
 Notes:
 
 - this loads an existing helpfulness checkpoint and predicts one review directly
-- the main knobs are `--text`, `--title`, `--rating`, `--verified-purchase`, and `--model-prefix`
+- the main knobs are `--text`, `--title`, and `--model-prefix`; `--rating` and `--verified-purchase` are retained for legacy metadata-inclusive checkpoints
+- the default checkpoint is `models/helpfulness/amazon_helpfulness`
+- the default checkpoint only needs title/text; length features are derived automatically
 
 Implementation:
 
 - `eWOM/helpfulness/run_helpfulness_inference.py`
 
-### 5. Sentiment training pipeline
-
-Command:
+Example:
 
 ```bash
-python eWOM/sentiment_analysis/run_sentiment_pipeline.py
+python -m eWOM.helpfulness.run_helpfulness_inference \
+  --title "Useful and balanced review" \
+  --text "Detailed pros and cons, setup notes, and long-term battery observations."
 ```
 
-Notes:
-
-- this trains and evaluates the default sentiment baseline
-- it does not expose CLI flags yet
-- on this repository state it loads the local Arrow dataset under `data/raw/amazon_polarity`
-
-Implementation:
-
-- `eWOM/sentiment_analysis/run_sentiment_pipeline.py`
-
-### 6. Sentiment benchmark CLI
+### 5. Sentiment training CLI
 
 Command:
 
@@ -332,17 +331,19 @@ python -m eWOM.sentiment_analysis.run_sentiment_benchmark --help
 
 Notes:
 
-- this benchmarks TF-IDF sentiment classifiers on a train/val split carved from the Amazon Polarity train split
+- this trains and benchmarks TF-IDF sentiment classifiers on a train/val split carved from the Amazon Polarity train split
 - it supports `logistic_regression`, `multinomial_nb`, and `complement_nb`
 - the main knobs are `--data-dir`, `--model-output`, `--val-ratio`, and `--candidate-models`
-- when multiple candidates are provided, it saves the validation-selected model artifact and writes the full comparison into the summary JSON
+- when multiple candidates are provided, it saves the validation-selected artifact at the main prefix, writes each candidate artifact at a suffixed prefix, and writes the full comparison into the summary JSON
+- the terminal output is a compact metric table by default; use `--output-format json` for JSON stdout
+- use `--log-level WARNING` if you want less progress logging and mostly the final table
 - `--reuse-existing-artifacts` skips fitting and returns the stored summary when the checkpoint files already exist
 
 Implementation:
 
 - `eWOM/sentiment_analysis/run_sentiment_benchmark.py`
 
-### 7. Sentiment direct inference CLI
+### 6. Sentiment direct inference CLI
 
 Command:
 
@@ -359,7 +360,7 @@ Implementation:
 
 - `eWOM/sentiment_analysis/run_sentiment_inference.py`
 
-### 8. Related normalization CLI
+### 7. Related normalization CLI
 
 Command:
 
@@ -404,8 +405,8 @@ Raw source datasets currently referenced by the codebase:
 
 Current tracked summaries:
 
-- `models/helpfulness/amazon_helpfulness_electronics_tfidf_lr_summary.json`
-- `models/sentiment/amazon_polarity_full_benchmark_summary.json`
+- `models/helpfulness/amazon_helpfulness_summary.json`
+- `models/sentiment/amazon_polarity_summary.json`
 
 ## Setup
 
@@ -422,6 +423,5 @@ pip install -r requirements.txt
 ## Current Limitations
 
 - The package is documented as an "agent", but it is currently a Python inference/training package rather than a deployed service or tool-calling agent.
-- The runtime defaults in `eWOM/api.py` still point to the baseline sentiment checkpoint, not the newer benchmark-selected sentiment checkpoint.
 - Old checked-in summary files may still refer to `dev` in metadata produced before the explicit `train/val/test` CLI refactor.
 - The final eWOM score is an explainable heuristic fusion layer, not a second-stage model trained on downstream business outcomes.

@@ -7,7 +7,7 @@ from pathlib import Path
 from eWOM.sentiment_analysis.predictor import SentimentPredictor
 
 
-DEFAULT_MODEL_PREFIX = Path("models/sentiment/amazon_polarity_full_benchmark")
+DEFAULT_MODEL_PREFIX = Path("models/sentiment/amazon_polarity")
 
 
 def build_parser() -> argparse.ArgumentParser:

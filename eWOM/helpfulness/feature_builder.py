@@ -15,8 +15,8 @@ class HelpfulnessFeatureConfig:
     min_df: int = 5
     max_df: float = 0.95
     ngram_range: tuple[int, int] = (1, 2)
-    use_rating: bool = True
-    use_verified_purchase: bool = True
+    use_rating: bool = False
+    use_verified_purchase: bool = False
     use_text_length_features: bool = True
 
 
@@ -49,6 +49,8 @@ class HelpfulnessFeatureBuilder:
     @property
     def active_numeric_feature_names(self) -> tuple[str, ...]:
         names: list[str] = []
+        # Older pickled feature builders do not have these flags. Treat missing
+        # attributes as the legacy metadata-inclusive configuration.
         if getattr(self.config, "use_rating", True):
             names.append("rating")
         if getattr(self.config, "use_verified_purchase", True):

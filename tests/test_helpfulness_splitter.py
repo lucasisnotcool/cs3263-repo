@@ -7,6 +7,7 @@ from pathlib import Path
 
 from eWOM.helpfulness.dataset_loader import PreparedHelpfulnessSplitLoader
 from eWOM.helpfulness.train_test_splitter import (
+    DEFAULT_BALANCE_LABELS,
     DEFAULT_POSITIVE_THRESHOLD,
     assign_and_write,
     build_output_paths,
@@ -55,7 +56,7 @@ class HelpfulnessSplitBuilderTests(unittest.TestCase):
         self.assertEqual(loaded["helpful_votes"].tolist(), [0, 1, 2])
         self.assertEqual(loaded["label"].tolist(), [0, 1, 1])
 
-    def test_balance_labels_undersamples_majority_class_for_all_splits(self) -> None:
+    def test_default_balance_labels_undersamples_majority_class_for_all_splits(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir_path = Path(tmpdir)
             review_path = tmpdir_path / "reviews.jsonl"
@@ -84,7 +85,6 @@ class HelpfulnessSplitBuilderTests(unittest.TestCase):
                 stats,
                 val_size=0.25,
                 test_size=0.25,
-                balance_labels=True,
             )
             assignment_stats = assign_and_write(
                 review_path,
@@ -100,6 +100,7 @@ class HelpfulnessSplitBuilderTests(unittest.TestCase):
                 log_every_rows=0,
             )
 
+        self.assertTrue(DEFAULT_BALANCE_LABELS)
         self.assertEqual(stats.label_counts, {0: 6, 1: 4})
         self.assertEqual(plan.train_targets, {0: 2, 1: 2})
         self.assertEqual(plan.val_targets, {0: 1, 1: 1})

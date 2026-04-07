@@ -29,7 +29,7 @@ DEFAULT_TEST_OUTPUT_FILENAME = "test.jsonl"
 DEFAULT_SUMMARY_OUTPUT_FILENAME = "split_summary.json"
 
 DEFAULT_VAL_SIZE = 0.1
-DEFAULT_TEST_SIZE = 0.2
+DEFAULT_TEST_SIZE = 0.1
 DEFAULT_POSITIVE_THRESHOLD = 1
 DEFAULT_DROP_MIDDLE = False
 DEFAULT_MIN_REVIEW_WORDS = 0
@@ -38,7 +38,7 @@ DEFAULT_RANDOM_STATE = 42
 DEFAULT_OVERWRITE_OUTPUT = True
 DEFAULT_LOG_EVERY_ROWS = 50_000
 DEFAULT_SHUFFLE_BUFFER_SIZE = 256
-DEFAULT_BALANCE_LABELS = False
+DEFAULT_BALANCE_LABELS = True
 DEFAULT_BALANCED_TOTAL_ROWS = None
 
 
@@ -168,7 +168,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_BALANCE_LABELS,
         help=(
             "Whether to undersample majority labels so the generated split files "
-            "have equal label counts before train/val/test allocation."
+            "have equal label counts before train/val/test allocation. Enabled by default; "
+            "use --no-balance-labels only for legacy unbalanced experiments."
         ),
     )
     parser.add_argument(
@@ -176,7 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_BALANCED_TOTAL_ROWS,
         help=(
-            "Optional total number of rows to emit when --balance-labels is enabled. "
+            "Optional total number of balanced rows to emit. "
             "For binary labels this must be even, for example 8000000 for 4M per label."
         ),
     )

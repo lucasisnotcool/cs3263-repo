@@ -37,6 +37,7 @@ DEFAULT_MODEL_SELECTION_METRIC = "macro_f1"
 class HelpfulnessArtifacts:
     model_path: str
     feature_builder_path: str
+    candidate_artifacts: dict[str, dict[str, str]]
 
 
 def _to_builtin(value: Any) -> Any:
@@ -119,6 +120,8 @@ class HelpfulnessTrainer:
         self.threshold = self.DEFAULT_CLASSIFICATION_THRESHOLD
         self.threshold_selection_summary: dict[str, Any] | None = None
         self.model_selection_summary: dict[str, Any] | None = None
+        self.trained_candidate_models: dict[str, Any] = {}
+        self.candidate_thresholds: dict[str, float] = {}
 
     def make_train_val_split(
         self,
@@ -183,6 +186,8 @@ class HelpfulnessTrainer:
         best_selection_summary = None
         best_ranking_key = None
         candidate_models: dict[str, Any] = {}
+        self.trained_candidate_models = {}
+        self.candidate_thresholds = {}
 
         LOGGER.info(
             "Training and comparing %s candidate models on the validation split",
@@ -201,6 +206,10 @@ class HelpfulnessTrainer:
             selection_summary = self._select_threshold(y_val, val_positive_probs)
             selected_metrics = selection_summary["selected_threshold_metrics"]
             ranking_key = _candidate_ranking_key(selected_metrics)
+            self.trained_candidate_models[model_name] = model
+            self.candidate_thresholds[model_name] = float(
+                selection_summary["best_threshold"]
+            )
             candidate_models[model_name] = {
                 "model_class": model.__class__.__name__,
                 "model_params": _to_builtin(model.get_params()),
@@ -278,14 +287,44 @@ class HelpfulnessTrainer:
         }
         joblib.dump(bundle, model_path)
         joblib.dump(self.feature_builder, feature_builder_path)
+
+        candidate_artifacts: dict[str, dict[str, str]] = {}
+        for model_name, candidate_model in self.trained_candidate_models.items():
+            candidate_output_prefix = output_root.with_name(
+                f"{output_root.name}_{model_name}"
+            )
+            candidate_model_path = f"{candidate_output_prefix}.joblib"
+            candidate_feature_builder_path = (
+                f"{candidate_output_prefix}_feature_builder.joblib"
+            )
+            candidate_bundle = {
+                "model": candidate_model,
+                "model_name": model_name,
+                "threshold": float(
+                    self.candidate_thresholds.get(
+                        model_name,
+                        self.DEFAULT_CLASSIFICATION_THRESHOLD,
+                    )
+                ),
+                "label_text_by_id": LABEL_TEXT_BY_ID,
+            }
+            joblib.dump(candidate_bundle, candidate_model_path)
+            joblib.dump(self.feature_builder, candidate_feature_builder_path)
+            candidate_artifacts[model_name] = {
+                "model_path": candidate_model_path,
+                "feature_builder_path": candidate_feature_builder_path,
+            }
+
         LOGGER.info(
-            "Serialized helpfulness artifacts to model_path=%s feature_builder_path=%s",
+            "Serialized helpfulness artifacts to model_path=%s feature_builder_path=%s candidate_artifacts=%s",
             model_path,
             feature_builder_path,
+            sorted(candidate_artifacts.keys()),
         )
         return HelpfulnessArtifacts(
             model_path=model_path,
             feature_builder_path=feature_builder_path,
+            candidate_artifacts=candidate_artifacts,
         )
 
     def _predict_positive_probabilities_from_matrix(self, x) -> np.ndarray:

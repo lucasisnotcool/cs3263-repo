@@ -36,7 +36,7 @@ from eWOM.sentiment_analysis.preprocess import SentimentPreprocessor
 LOGGER = logging.getLogger(__name__)
 
 DATA_DIR = "data/raw/amazon_polarity"
-MODEL_OUTPUT = "models/sentiment/amazon_polarity_full_benchmark"
+MODEL_OUTPUT = "models/sentiment/amazon_polarity"
 MAX_TRAIN_ROWS = None
 MAX_TEST_ROWS = None
 MAX_FEATURES = 50000
@@ -65,7 +65,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model-output",
         default=MODEL_OUTPUT,
-        help="Output prefix for the selected model artifacts.",
+        help=(
+            "Output prefix for the selected model artifacts. Candidate artifacts are "
+            "written with suffixed prefixes when multiple candidates are trained."
+        ),
     )
     parser.add_argument(
         "--max-train-rows",
@@ -131,6 +134,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--reuse-existing-artifacts",
         action="store_true",
         help="Skip training and return the existing summary if the model artifacts already exist.",
+    )
+    parser.add_argument(
+        "--output-format",
+        choices=("text", "json"),
+        default="text",
+        help=(
+            "Terminal output format. Summary JSON is always written to the "
+            "<model-output>_summary.json artifact."
+        ),
     )
     return parser
 
@@ -275,6 +287,120 @@ def candidate_ranking_key(metrics: dict[str, Any]) -> tuple[float, float, float,
     )
 
 
+def _format_metric(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.4f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _format_table(headers: list[str], rows: list[list[str]]) -> str:
+    widths = [
+        max(len(str(row[index])) for row in [headers, *rows])
+        for index in range(len(headers))
+    ]
+    header_line = "  ".join(
+        str(value).ljust(widths[index])
+        for index, value in enumerate(headers)
+    )
+    divider_line = "  ".join("-" * width for width in widths)
+    row_lines = [
+        "  ".join(
+            str(value).ljust(widths[index])
+            for index, value in enumerate(row)
+        )
+        for row in rows
+    ]
+    return "\n".join([header_line, divider_line, *row_lines])
+
+
+def _positive_class_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    return metrics.get("classification_report", {}).get("positive", {})
+
+
+def format_benchmark_report(result: dict[str, Any]) -> str:
+    selected_model = result["model_selection"]["selected_model"]
+    candidate_rows = []
+    for model_name, summary in result["model_selection"]["candidate_models"].items():
+        metrics = summary["val_metrics"]
+        positive_metrics = _positive_class_metrics(metrics)
+        candidate_rows.append(
+            [
+                "*" if model_name == selected_model else "",
+                model_name,
+                _format_metric(metrics.get("accuracy")),
+                _format_metric(metrics.get("macro_f1")),
+                _format_metric(positive_metrics.get("precision")),
+                _format_metric(positive_metrics.get("recall")),
+                _format_metric(positive_metrics.get("f1-score")),
+                _format_metric(metrics.get("roc_auc")),
+                _format_metric(metrics.get("average_precision")),
+            ]
+        )
+
+    split_rows = []
+    for split_name, metrics_key in [
+        ("train", "train_metrics"),
+        ("val", "val_metrics"),
+        ("test", "test_metrics"),
+    ]:
+        metrics = result[metrics_key]
+        positive_metrics = _positive_class_metrics(metrics)
+        split_rows.append(
+            [
+                split_name,
+                _format_metric(metrics.get("accuracy")),
+                _format_metric(metrics.get("macro_f1")),
+                _format_metric(positive_metrics.get("precision")),
+                _format_metric(positive_metrics.get("recall")),
+                _format_metric(positive_metrics.get("f1-score")),
+                _format_metric(metrics.get("roc_auc")),
+                _format_metric(metrics.get("average_precision")),
+            ]
+        )
+
+    lines = [
+        "Sentiment benchmark summary",
+        f"Selected model: {selected_model}",
+        f"Summary JSON: {result['artifacts']['summary_path']}",
+        f"Selected model artifact: {result['artifacts']['model_path']}",
+        "",
+        "Validation candidate comparison:",
+        _format_table(
+            [
+                "sel",
+                "model",
+                "accuracy",
+                "macro_f1",
+                "pos_precision",
+                "pos_recall",
+                "pos_f1",
+                "roc_auc",
+                "avg_precision",
+            ],
+            candidate_rows,
+        ),
+        "",
+        "Selected model metrics:",
+        _format_table(
+            [
+                "split",
+                "accuracy",
+                "macro_f1",
+                "pos_precision",
+                "pos_recall",
+                "pos_f1",
+                "roc_auc",
+                "avg_precision",
+            ],
+            split_rows,
+        ),
+    ]
+    return "\n".join(lines)
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
@@ -291,6 +417,14 @@ def _artifact_paths(model_output: Path) -> dict[str, Path]:
     }
 
 
+def _candidate_artifact_paths(model_output: Path, model_name: str) -> dict[str, Path]:
+    candidate_output = model_output.with_name(f"{model_output.name}_{model_name}")
+    return {
+        "model_path": Path(f"{candidate_output}.joblib"),
+        "feature_builder_path": Path(f"{candidate_output}_feature_builder.joblib"),
+    }
+
+
 def _load_existing_summary(summary_path: Path) -> dict[str, Any]:
     with summary_path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -299,16 +433,23 @@ def _load_existing_summary(summary_path: Path) -> dict[str, Any]:
 def _should_reuse_existing_artifacts(
     *,
     model_output: Path,
+    candidate_model_names: list[str] | tuple[str, ...],
     reuse_existing_artifacts: bool,
 ) -> tuple[bool, dict[str, Path]]:
     artifact_paths = _artifact_paths(model_output)
     if not reuse_existing_artifacts:
         return False, artifact_paths
 
-    if all(path.exists() for path in artifact_paths.values()):
+    expected_paths = list(artifact_paths.values())
+    for model_name in candidate_model_names:
+        expected_paths.extend(
+            _candidate_artifact_paths(model_output, model_name).values()
+        )
+
+    if all(path.exists() for path in expected_paths):
         return True, artifact_paths
 
-    missing_paths = [str(path) for path in artifact_paths.values() if not path.exists()]
+    missing_paths = [str(path) for path in expected_paths if not path.exists()]
     LOGGER.info(
         "Requested checkpoint reuse, but some artifacts are missing. Training will proceed. missing=%s",
         missing_paths,
@@ -343,8 +484,12 @@ def run_benchmark(
 
     resolved_data_dir = Path(data_dir).expanduser().resolve()
     resolved_model_output = Path(model_output).expanduser().resolve()
+    requested_candidate_model_names = tuple(
+        candidate_model_names or CANDIDATE_MODEL_NAMES
+    )
     should_reuse_artifacts, artifact_paths = _should_reuse_existing_artifacts(
         model_output=resolved_model_output,
+        candidate_model_names=requested_candidate_model_names,
         reuse_existing_artifacts=reuse_existing_artifacts,
     )
     summary_path = artifact_paths["summary_path"]
@@ -365,7 +510,7 @@ def run_benchmark(
         max_train_rows,
         max_test_rows,
         val_ratio,
-        candidate_model_names or list(CANDIDATE_MODEL_NAMES),
+        list(requested_candidate_model_names),
     )
 
     loader = AmazonPolarityLoader(resolved_data_dir, random_state=random_state)
@@ -411,10 +556,11 @@ def run_benchmark(
     y_test = np.asarray(test_df["label"].tolist(), dtype=int)
 
     candidate_models = resolve_model_candidates(
-        candidate_model_names,
+        requested_candidate_model_names,
         random_state=random_state,
     )
     candidate_summaries: dict[str, Any] = {}
+    trained_candidate_models: dict[str, Any] = {}
     best_model = None
     best_model_name = None
     best_metrics = None
@@ -429,6 +575,7 @@ def run_benchmark(
         val_metrics = evaluate_model(model, x_val, y_val)
         test_metrics = evaluate_model(model, x_test, y_test)
         ranking = candidate_ranking_key(val_metrics)
+        trained_candidate_models[model_name] = model
         candidate_summaries[model_name] = {
             "model_class": model.__class__.__name__,
             "model_params": _to_builtin(model.get_params()),
@@ -459,9 +606,29 @@ def run_benchmark(
     joblib.dump(bundle, model_path)
     joblib.dump(feature_builder, feature_builder_path)
 
+    candidate_artifacts: dict[str, dict[str, str]] = {}
+    for model_name, model in trained_candidate_models.items():
+        candidate_artifact_paths = _candidate_artifact_paths(
+            resolved_model_output,
+            model_name,
+        )
+        candidate_bundle = {
+            "model": model,
+            "model_name": model_name,
+            "label_text_by_id": LABEL_TEXT_BY_ID,
+        }
+        joblib.dump(candidate_bundle, candidate_artifact_paths["model_path"])
+        joblib.dump(feature_builder, candidate_artifact_paths["feature_builder_path"])
+        candidate_artifacts[model_name] = {
+            "model_path": str(candidate_artifact_paths["model_path"]),
+            "feature_builder_path": str(candidate_artifact_paths["feature_builder_path"]),
+        }
+        candidate_summaries[model_name]["artifacts"] = candidate_artifacts[model_name]
+
     metadata = {
         "model_path": model_path,
         "feature_builder_path": feature_builder_path,
+        "candidate_artifacts": candidate_artifacts,
         "model_name": best_model_name,
         "model_class": best_model.__class__.__name__,
         "feature_builder_class": feature_builder.__class__.__name__,
@@ -527,6 +694,7 @@ def run_benchmark(
         "artifacts": {
             "model_path": model_path,
             "feature_builder_path": feature_builder_path,
+            "candidate_artifacts": candidate_artifacts,
             "metadata_path": str(metadata_path),
             "summary_path": str(summary_path),
         },
@@ -560,7 +728,10 @@ def main() -> None:
         log_level=args.log_level,
         reuse_existing_artifacts=args.reuse_existing_artifacts,
     )
-    print(json.dumps(result, indent=2))
+    if args.output_format == "json":
+        print(json.dumps(result, indent=2))
+    else:
+        print(format_benchmark_report(result))
 
 
 if __name__ == "__main__":

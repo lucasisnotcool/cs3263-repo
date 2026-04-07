@@ -253,19 +253,25 @@ class EWOMModelPaths:
         root = Path(project_root) if project_root is not None else PROJECT_ROOT
         return cls(
             helpfulness_model_path=str(
-                root / "models" / "helpfulness" / "amazon_helpfulness_benchmark.joblib"
+                root
+                / "models"
+                / "helpfulness"
+                / "amazon_helpfulness_logistic_regression.joblib"
             ),
             helpfulness_feature_builder_path=str(
                 root
                 / "models"
                 / "helpfulness"
-                / "amazon_helpfulness_benchmark_feature_builder.joblib"
+                / "amazon_helpfulness_logistic_regression_feature_builder.joblib"
             ),
             sentiment_model_path=str(
-                root / "models" / "sentiment" / "amazon_polarity_full_benchmark.joblib"
+                root / "models" / "sentiment" / "amazon_polarity_logistic_regression.joblib"
             ),
             sentiment_feature_builder_path=str(
-                root / "models" / "sentiment" / "amazon_polarity_full_benchmark_feature_builder.joblib"
+                root
+                / "models"
+                / "sentiment"
+                / "amazon_polarity_logistic_regression_feature_builder.joblib"
             ),
         )
 

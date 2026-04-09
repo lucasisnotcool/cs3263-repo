@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 import math
@@ -42,6 +43,84 @@ class BayesianValueInput:
             warranty_months=_to_float(payload.get("warranty_months")),
             return_window_days=_to_float(payload.get("return_window_days")),
         )
+
+
+def extract_ewom_bayesian_signals(ewom_payload: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(ewom_payload, Mapping):
+        raise TypeError("ewom_payload must be a mapping.")
+
+    aggregate = ewom_payload.get("aggregate")
+    if isinstance(aggregate, Mapping):
+        return {
+            "source_type": "review_set",
+            "review_count": _to_int(ewom_payload.get("review_count")),
+            "trust_probability": _resolve_review_set_trust_probability(
+                ewom_payload=ewom_payload,
+                aggregate=aggregate,
+            ),
+            "ewom_score_0_to_100": _to_float(
+                aggregate.get("final_ewom_score_0_to_100")
+            ),
+            "ewom_magnitude_0_to_100": _to_float(
+                aggregate.get("final_ewom_magnitude_0_to_100")
+            ),
+        }
+
+    fusion = ewom_payload.get("fusion")
+    if isinstance(fusion, Mapping):
+        return {
+            "source_type": "single_review",
+            "review_count": 1,
+            "trust_probability": _resolve_single_review_trust_probability(ewom_payload),
+            "ewom_score_0_to_100": _to_float(fusion.get("ewom_score_0_to_100")),
+            "ewom_magnitude_0_to_100": _to_float(
+                fusion.get("ewom_magnitude_0_to_100")
+            ),
+        }
+
+    raise ValueError(
+        "ewom_payload must contain either an 'aggregate' review-set result or a "
+        "'fusion' single-review result."
+    )
+
+
+def fuse_ewom_result_into_bayesian_input(
+    base_input: BayesianValueInput | Mapping[str, Any] | None,
+    ewom_payload: Mapping[str, Any],
+) -> tuple[BayesianValueInput, dict[str, Any]]:
+    resolved_base_input = (
+        BayesianValueInput()
+        if base_input is None
+        else (
+            base_input
+            if isinstance(base_input, BayesianValueInput)
+            else BayesianValueInput.from_mapping(base_input)
+        )
+    )
+    ewom_signals = extract_ewom_bayesian_signals(ewom_payload)
+
+    fused_input = BayesianValueInput(
+        trust_probability=_prefer_non_null(
+            ewom_signals.get("trust_probability"),
+            resolved_base_input.trust_probability,
+        ),
+        ewom_score_0_to_100=_prefer_non_null(
+            ewom_signals.get("ewom_score_0_to_100"),
+            resolved_base_input.ewom_score_0_to_100,
+        ),
+        ewom_magnitude_0_to_100=_prefer_non_null(
+            ewom_signals.get("ewom_magnitude_0_to_100"),
+            resolved_base_input.ewom_magnitude_0_to_100,
+        ),
+        average_rating=resolved_base_input.average_rating,
+        rating_count=resolved_base_input.rating_count,
+        verified_purchase_rate=resolved_base_input.verified_purchase_rate,
+        price=resolved_base_input.price,
+        peer_price=resolved_base_input.peer_price,
+        warranty_months=resolved_base_input.warranty_months,
+        return_window_days=resolved_base_input.return_window_days,
+    )
+    return fused_input, ewom_signals
 
 
 def score_good_value_probability(
@@ -425,6 +504,61 @@ def _to_float(value: Any) -> float | None:
     if math.isnan(numeric) or math.isinf(numeric):
         return None
     return numeric
+
+
+def _to_int(value: Any) -> int | None:
+    if value in {None, ""}:
+        return None
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if numeric >= 0 else None
+
+
+def _resolve_review_set_trust_probability(
+    *,
+    ewom_payload: Mapping[str, Any],
+    aggregate: Mapping[str, Any],
+) -> float | None:
+    mean_deception_probability = _to_float(aggregate.get("mean_deception_probability"))
+    if mean_deception_probability is not None:
+        return _clamp(1.0 - mean_deception_probability, 0.0, 1.0)
+
+    reviews = ewom_payload.get("reviews")
+    if not isinstance(reviews, Sequence) or isinstance(reviews, (str, bytes)):
+        return None
+
+    trust_probabilities: list[float] = []
+    for review in reviews:
+        if not isinstance(review, Mapping):
+            continue
+        trust_probability = _resolve_single_review_trust_probability(review)
+        if trust_probability is not None:
+            trust_probabilities.append(trust_probability)
+
+    if not trust_probabilities:
+        return None
+    return sum(trust_probabilities) / len(trust_probabilities)
+
+
+def _resolve_single_review_trust_probability(payload: Mapping[str, Any]) -> float | None:
+    deception = payload.get("deception")
+    if not isinstance(deception, Mapping):
+        return None
+
+    trust_probability = _to_float(deception.get("trust_probability"))
+    if trust_probability is not None:
+        return _clamp(trust_probability, 0.0, 1.0)
+
+    deception_probability = _to_float(deception.get("deception_probability"))
+    if deception_probability is None:
+        return None
+    return _clamp(1.0 - deception_probability, 0.0, 1.0)
+
+
+def _prefer_non_null(primary: float | None, fallback: float | None) -> float | None:
+    return primary if primary is not None else fallback
 
 
 def _normalize(weights: Mapping[str, float]) -> dict[str, float]:

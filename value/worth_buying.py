@@ -5,7 +5,7 @@ import json
 import logging
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import joblib
 import numpy as np
@@ -178,12 +178,13 @@ def score_worth_buying_catalog(
     *,
     model_path: str | Path | None = None,
     model_bundle: dict[str, Any] | None = None,
+    config_overrides: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
     if (model_path is None) == (model_bundle is None):
         raise ValueError("Provide exactly one of model_path or model_bundle.")
 
     bundle = model_bundle if model_bundle is not None else load_model(model_path)
-    config = WorthBuyingConfig(**bundle["config"])
+    config = _resolve_runtime_config(bundle, config_overrides=config_overrides)
     train_catalog = bundle["train_catalog"]
     resolved_catalog = _normalize_catalog_frame(catalog).reset_index(drop=True)
 
@@ -206,6 +207,68 @@ def score_worth_buying_catalog(
         config=config,
         global_rating_mean=float(bundle["global_rating_mean"]),
     )
+
+
+def inspect_worth_buying_catalog_neighbors(
+    catalog: pd.DataFrame,
+    *,
+    model_path: str | Path | None = None,
+    model_bundle: dict[str, Any] | None = None,
+    config_overrides: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    if (model_path is None) == (model_bundle is None):
+        raise ValueError("Provide exactly one of model_path or model_bundle.")
+
+    bundle = model_bundle if model_bundle is not None else load_model(model_path)
+    config = _resolve_runtime_config(bundle, config_overrides=config_overrides)
+    train_catalog = bundle["train_catalog"]
+    resolved_catalog = _normalize_catalog_frame(catalog).reset_index(drop=True)
+
+    query_matrix = _transform_catalog(resolved_catalog, bundle)
+    candidate_neighbors = min(
+        max(2, config.top_k_neighbors * config.neighbor_candidate_multiplier + 1),
+        len(train_catalog),
+    )
+    distances, indices = _chunked_kneighbors(
+        bundle["neighbor_model"],
+        query_matrix,
+        candidate_neighbors,
+        config.neighbor_query_chunk_size,
+    )
+
+    diagnostics: list[dict[str, Any]] = []
+    for row_index, (_, product) in enumerate(resolved_catalog.iterrows()):
+        neighbors = _select_neighbors(
+            query_parent_asin=_safe_get_string(product, "parent_asin"),
+            train_catalog=train_catalog,
+            candidate_indices=indices[row_index],
+            candidate_distances=distances[row_index],
+            config=config,
+        )
+        average_similarity = (
+            float(np.mean([neighbor["similarity"] for neighbor in neighbors]))
+            if neighbors
+            else 0.0
+        )
+        peer_price = _weighted_average(
+            [neighbor["price"] for neighbor in neighbors],
+            [neighbor["similarity"] for neighbor in neighbors],
+        )
+        diagnostics.append(
+            {
+                "catalog_row_index": int(row_index),
+                "parent_asin": _safe_get_string(product, "parent_asin"),
+                "title": _safe_get_string(product, "title"),
+                "price": _to_optional_float(product.get("price")),
+                "peer_price": peer_price,
+                "neighbor_count": len(neighbors),
+                "average_neighbor_similarity": average_similarity,
+                "top_k_neighbors_used": int(config.top_k_neighbors),
+                "min_similarity_used": float(config.min_similarity),
+                "neighbors": neighbors,
+            }
+        )
+    return diagnostics
 
 
 def _normalize_catalog_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -434,8 +497,12 @@ def _select_neighbors(
             continue
         neighbors.append(
             {
+                "parent_asin": candidate_parent_asin,
+                "title": _safe_text(candidate.get("title")),
                 "price": float(candidate["price"]),
                 "similarity": similarity,
+                "average_rating": _to_optional_float(candidate.get("average_rating")),
+                "review_count": int(candidate.get("review_count", 0) or 0),
             }
         )
         if len(neighbors) >= config.top_k_neighbors:
@@ -566,6 +633,38 @@ def _safe_text(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _safe_get_string(row: pd.Series, key: str) -> str:
+    value = row.get(key, "")
+    return _safe_text(value)
+
+
+def _to_optional_float(value: Any) -> float | None:
+    if value in {None, ""}:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return numeric
+
+
+def _resolve_runtime_config(
+    bundle: Mapping[str, Any],
+    config_overrides: Mapping[str, Any] | None = None,
+) -> WorthBuyingConfig:
+    config_payload = dict(bundle["config"])
+    if config_overrides:
+        for key, value in config_overrides.items():
+            if value is None:
+                continue
+            if key not in config_payload:
+                raise ValueError(f"Unsupported worth-buying config override: {key}")
+            config_payload[key] = value
+    return WorthBuyingConfig(**config_payload)
 
 
 def _clamp(value: float, low: float, high: float) -> float:

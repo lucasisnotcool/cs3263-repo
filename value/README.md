@@ -638,6 +638,11 @@ flowchart LR
 ```bash
 python -m value.run_bayesian_value_model --mock --pretty
 python -m value.run_bayesian_value_model --input ./bayesian_value_input.json --pretty
+python -m value.run_bayesian_value_model \
+  --mock \
+  --ewom-mock-json mock/mock_ewom.json \
+  --ewom-mock-case-id listing_feedback_mixed_half_good_half_bad \
+  --pretty
 ```
 
 Returned fields:
@@ -648,6 +653,75 @@ Returned fields:
 - `most_likely_component_states`
 - `evidence`
 - `derived_metrics`
+- `resolved_input`
+- `fused_agent_signals` when an eWOM/trust result is fused in
+
+### eBay Live Scoring
+
+If you have eBay API credentials configured via `EBAY_CLIENT_ID`,
+`EBAY_CLIENT_SECRET`, and `EBAY_ENVIRONMENT`, the normalization script can now
+fetch a live eBay listing, run seller feedback through the eWOM stack, and then
+score the result with the Bayesian value model.
+
+Basic run:
+
+```bash
+python scripts/run_normalization.py \
+  --url "https://www.ebay.com.sg/itm/206158794969" \
+  --score-bayesian
+```
+
+Compact summary output:
+
+```bash
+python scripts/run_normalization.py \
+  --url "https://www.ebay.com.sg/itm/206158794969" \
+  --score-bayesian \
+  --summary
+```
+
+Optional peer-price inputs:
+
+```bash
+python scripts/run_normalization.py \
+  --url "https://www.ebay.com.sg/itm/206158794969" \
+  --score-bayesian \
+  --peer-price 149.0
+
+python scripts/run_normalization.py \
+  --url "https://www.ebay.com.sg/itm/206158794969" \
+  --score-bayesian \
+  --worth-buying-model-path value/artifacts/amazon_worth_buying_quick.joblib
+
+python scripts/run_normalization.py \
+  --url "https://www.ebay.com.sg/itm/206158794969" \
+  --score-bayesian \
+  --worth-buying-model-path value/artifacts/amazon_worth_buying_quick.joblib \
+  --top-k-neighbors 5 \
+  --summary
+```
+
+To inspect how retrieval behaves across different `k` values and generate a
+graph:
+
+```bash
+python scripts/run_normalization.py \
+  --url "https://www.ebay.com.sg/itm/206158794969" \
+  --score-bayesian \
+  --worth-buying-model-path value/artifacts/amazon_worth_buying_quick.joblib \
+  --k-values 1,3,5,10,20 \
+  --summary
+```
+
+In scoring mode, the output includes:
+
+- normalized eBay `candidate` data
+- optional retrieval-side `market_context` with inferred `peer_price`
+- optional `ewom_result` from seller feedback texts
+- final `bayesian_result`
+
+With `--k-values`, the command also writes an HTML plot under
+`value/artifacts/` unless you override the path with `--k-sweep-output`.
 
 ## 5. Combined Retrieval + Bayesian Pipeline
 

@@ -1,6 +1,8 @@
 import re
 from typing import Any, Dict, List, Optional
 
+import requests
+
 from core.entities.candidate import Candidate
 from core.interfaces.feedback_client import FeedbackClient
 from core.interfaces.marketplace_client import MarketplaceClient
@@ -25,7 +27,7 @@ class NormalizationService(Normalizer):
         parsed_url = self.url_parser.parse(url)
 
         if parsed_url.legacy_item_id:
-            item = self.marketplace_client.get_item_by_legacy_id(parsed_url.legacy_item_id)
+            item = self._resolve_item_by_legacy_or_group(parsed_url.legacy_item_id)
             return self._normalize_item_response(url, parsed_url, item)
 
         if parsed_url.epid:
@@ -40,7 +42,7 @@ class NormalizationService(Normalizer):
 
             if legacy_item_id:
                 parsed_url.legacy_item_id = legacy_item_id
-                item = self.marketplace_client.get_item_by_legacy_id(legacy_item_id)
+                item = self._resolve_item_by_legacy_or_group(legacy_item_id)
                 return self._normalize_item_response(url, parsed_url, item)
 
             summary_like_item = {
@@ -59,6 +61,23 @@ class NormalizationService(Normalizer):
             return self._normalize_item_response(url, parsed_url, summary_like_item)
 
         raise ValueError(f"Unsupported or invalid eBay URL: {url}")
+
+    def _resolve_item_by_legacy_or_group(self, legacy_item_id: str) -> Dict[str, Any]:
+        try:
+            return self.marketplace_client.get_item_by_legacy_id(legacy_item_id)
+        except requests.HTTPError as exc:
+            item_group_id = self._extract_item_group_id_from_http_error(exc)
+            if not item_group_id:
+                raise
+
+            item_group = self.marketplace_client.get_items_by_item_group(item_group_id)
+            group_items = item_group.get("items", [])
+            if not isinstance(group_items, list) or not group_items:
+                raise ValueError(
+                    f"Variation listing {legacy_item_id} resolved to item group {item_group_id}, "
+                    "but no purchasable items were returned."
+                ) from exc
+            return self._select_representative_group_item(group_items)
 
     def _normalize_item_response(
         self,
@@ -99,6 +118,77 @@ class NormalizationService(Normalizer):
             product_family_key=self._build_product_family_key(item, parsed_url),
         )
 
+    def _extract_item_group_id_from_http_error(
+        self,
+        error: requests.HTTPError,
+    ) -> Optional[str]:
+        response = getattr(error, "response", None)
+        if response is None or getattr(response, "status_code", None) != 400:
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+
+        issues: list[dict[str, Any]] = []
+        if isinstance(payload, dict):
+            for key in ("errors", "warnings"):
+                entries = payload.get(key)
+                if isinstance(entries, list):
+                    issues.extend(entry for entry in entries if isinstance(entry, dict))
+
+        for issue in issues:
+            error_id = str(issue.get("errorId") or "").strip()
+            if error_id != "11006":
+                continue
+
+            for parameter in issue.get("parameters", []):
+                if not isinstance(parameter, dict):
+                    continue
+                parameter_value = str(parameter.get("value") or "").strip()
+                if not parameter_value:
+                    continue
+                match = re.search(r"item_group_id=([^&]+)", parameter_value)
+                if match:
+                    return match.group(1)
+                if parameter_value.isdigit():
+                    return parameter_value
+        return None
+
+    def _select_representative_group_item(
+        self,
+        items: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        def sort_key(item: Dict[str, Any]) -> tuple[int, int, int]:
+            estimated_availabilities = item.get("estimatedAvailabilities")
+            availability_score = 0
+            if isinstance(estimated_availabilities, list):
+                for availability in estimated_availabilities:
+                    if not isinstance(availability, dict):
+                        continue
+                    status = str(availability.get("estimatedAvailabilityStatus") or "").strip().upper()
+                    if status == "IN_STOCK":
+                        availability_score = max(availability_score, 2)
+                    elif status == "LIMITED_STOCK":
+                        availability_score = max(availability_score, 1)
+
+            price_value = self._safe_float(self._safe_get(item, "price", "value"))
+            if price_value is None:
+                price_rank = 10**9
+            else:
+                price_rank = int(round(price_value * 100))
+
+            title_length_rank = len(str(item.get("title") or ""))
+            return (-availability_score, price_rank, -title_length_rank)
+
+        ranked_items = [
+            item for item in items if isinstance(item, dict)
+        ]
+        if not ranked_items:
+            raise ValueError("Item group did not contain any valid item payloads.")
+        return sorted(ranked_items, key=sort_key)[0]
+
     def _safe_get(self, d: Optional[Dict[str, Any]], *keys, default=None):
         current = d
         for key in keys:
@@ -106,6 +196,12 @@ class NormalizationService(Normalizer):
                 return default
             current = current[key]
         return current
+
+    def _safe_float(self, value: Any) -> Optional[float]:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def _parse_detailed_seller_ratings(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         seller = item.get("seller", {})

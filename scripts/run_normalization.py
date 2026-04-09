@@ -14,6 +14,14 @@ from infrastructure.external_clients.ebay.ebay_browse_client import EbayBrowseCl
 from infrastructure.external_clients.ebay.ebay_feedback_client import EbayFeedbackClient
 from infrastructure.external_clients.ebay.ebay_url_parser import EbayUrlParser
 from core.services.normalization_service import NormalizationService
+from value.ebay_value import (
+    compare_ebay_candidate_value_results,
+    score_ebay_candidate_value,
+    summarize_candidate_market_context_k_sweep,
+    summarize_ebay_candidate_value_result,
+    sweep_candidate_market_context_k,
+    write_candidate_k_sweep_plot,
+)
 
 
 AUTH_SCOPES = [
@@ -46,6 +54,128 @@ def parse_args():
         action="store_true",
         help="Print the raw OAuth token response and exit.",
     )
+    parser.add_argument(
+        "--score-bayesian",
+        action="store_true",
+        help=(
+            "After normalization, run seller feedback through eWOM and score the listing "
+            "with the Bayesian value model."
+        ),
+    )
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help=(
+            "Print a compact scoring summary instead of the full JSON payload. "
+            "Best used with --score-bayesian."
+        ),
+    )
+    parser.add_argument(
+        "--compare",
+        action="store_true",
+        help=(
+            "Compare exactly two scored listings. Requires two --url values and "
+            "--score-bayesian."
+        ),
+    )
+    parser.add_argument(
+        "--peer-price",
+        type=float,
+        default=None,
+        help="Optional manual peer price to supply to the Bayesian value model.",
+    )
+    parser.add_argument(
+        "--exclude-shipping",
+        action="store_true",
+        help=(
+            "Use item price only for retrieval and Bayesian scoring instead of "
+            "item price plus shipping."
+        ),
+    )
+    parser.add_argument(
+        "--use-converted-usd",
+        action="store_true",
+        help=(
+            "Prefer eBay's convertedFromValue in USD for item and shipping prices "
+            "when available."
+        ),
+    )
+    parser.add_argument(
+        "--top-k-neighbors",
+        type=int,
+        default=None,
+        help="Optional override for the final reranked neighbor count used for peer-price averaging.",
+    )
+    parser.add_argument(
+        "--retrieval-candidate-pool-size",
+        type=int,
+        default=500,
+        help=(
+            "Number of raw retrieval candidates to inspect before reranking. "
+            "The eBay bridge will rerank this pool and average the top final matches."
+        ),
+    )
+    parser.add_argument(
+        "--min-peer-price-ratio",
+        type=float,
+        default=0.18,
+        help=(
+            "Ignore retrieved peer prices below this fraction of the listing price. "
+            "For example, 0.50 drops peer prices that are more than 50%% below the listing."
+        ),
+    )
+    parser.add_argument(
+        "--min-peer-neighbors",
+        type=int,
+        default=3,
+        help=(
+            "Ignore retrieved peer prices unless at least this many reranked neighbors "
+            "remain after filtering."
+        ),
+    )
+    parser.add_argument(
+        "--k-values",
+        default=None,
+        help=(
+            "Comma-separated k values for retrieval diagnostics, for example "
+            "\"1,3,5,10,20\". Requires --worth-buying-model-path."
+        ),
+    )
+    parser.add_argument(
+        "--k-sweep-output",
+        type=Path,
+        default=None,
+        help="Optional HTML output path for the k-sweep diagnostic plot.",
+    )
+    parser.add_argument(
+        "--worth-buying-model-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional worth-buying retrieval model path. When provided, infer peer_price "
+            "from the Electronics neighbor model before Bayesian scoring."
+        ),
+    )
+    parser.add_argument(
+        "--helpfulness-model-path",
+        default=None,
+        help="Optional override for the helpfulness model artifact path.",
+    )
+    parser.add_argument(
+        "--helpfulness-feature-builder-path",
+        default=None,
+        help="Optional override for the helpfulness feature-builder artifact path.",
+    )
+    parser.add_argument(
+        "--sentiment-model-path",
+        default=None,
+        help="Optional override for the sentiment model artifact path.",
+    )
+    parser.add_argument(
+        "--sentiment-feature-builder-path",
+        default=None,
+        help="Optional override for the sentiment feature-builder artifact path.",
+    )
     return parser.parse_args()
 
 
@@ -63,7 +193,9 @@ def build_response_snapshot(response):
 
 
 def print_json(payload):
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    serialized = json.dumps(payload, indent=2, ensure_ascii=False)
+    sys.stdout.buffer.write((serialized + "\n").encode("utf-8", errors="replace"))
+    sys.stdout.flush()
 
 
 def get_seller_id_from_item_body(item_body):
@@ -192,7 +324,15 @@ def print_separator():
 
 def main():
     args = parse_args()
+    if args.summary and not (args.score_bayesian or args.k_values):
+        raise ValueError("--summary currently requires --score-bayesian or --k-values.")
+    if args.k_values and args.worth_buying_model_path is None:
+        raise ValueError("--k-values requires --worth-buying-model-path.")
+    if args.compare and not args.score_bayesian:
+        raise ValueError("--compare requires --score-bayesian.")
     urls = args.urls or DEFAULT_URLS
+    if args.compare and len(urls) != 2:
+        raise ValueError("--compare requires exactly two --url values.")
 
     auth_client = EbayAuthClient(scopes=AUTH_SCOPES)
 
@@ -220,10 +360,122 @@ def main():
             print_json(get_raw_response_for_url(url, browse_client, url_parser, feedback_client=feedback_client))
         return
 
+    if args.compare:
+        scored_results = []
+        for url in urls:
+            candidate = normalization_service.normalize(url)
+            scored_results.append(
+                score_ebay_candidate_value(
+                    candidate,
+                    peer_price=args.peer_price,
+                    worth_buying_model_path=args.worth_buying_model_path,
+                    top_k_neighbors=args.top_k_neighbors,
+                    ewom_model_paths=_resolve_ewom_model_paths(args),
+                    include_shipping_in_total=not args.exclude_shipping,
+                    prefer_converted_usd=args.use_converted_usd,
+                    retrieval_candidate_pool_size=args.retrieval_candidate_pool_size,
+                    min_peer_price_ratio=args.min_peer_price_ratio,
+                    min_peer_neighbor_count=args.min_peer_neighbors,
+                )
+            )
+        comparison_payload = compare_ebay_candidate_value_results(
+            scored_results[0],
+            scored_results[1],
+        )
+        if not args.summary:
+            comparison_payload = {
+                "listing_a_result": scored_results[0],
+                "listing_b_result": scored_results[1],
+                **comparison_payload,
+            }
+        print_json(comparison_payload)
+        return
+
     for index, url in enumerate(urls):
         if index:
             print_separator()
-        print_json(normalization_service.normalize(url).to_output_dict())
+        candidate = normalization_service.normalize(url)
+        if args.k_values:
+            k_sweep_result = sweep_candidate_market_context_k(
+                candidate,
+                model_path=args.worth_buying_model_path,
+                k_values=_parse_k_values(args.k_values),
+                ewom_model_paths=_resolve_ewom_model_paths(args)
+                if args.score_bayesian
+                else None,
+                include_shipping_in_total=not args.exclude_shipping,
+                prefer_converted_usd=args.use_converted_usd,
+                retrieval_candidate_pool_size=args.retrieval_candidate_pool_size,
+                min_peer_price_ratio=args.min_peer_price_ratio,
+                min_peer_neighbor_count=args.min_peer_neighbors,
+            )
+            plot_path = write_candidate_k_sweep_plot(
+                k_sweep_result,
+                output_path=(
+                    args.k_sweep_output
+                    or _default_k_sweep_output_path(candidate)
+                ),
+            )
+            payload = (
+                summarize_candidate_market_context_k_sweep(k_sweep_result)
+                if args.summary
+                else k_sweep_result
+            )
+            payload["k_sweep_plot_path"] = plot_path
+            print_json(payload)
+            continue
+        if args.score_bayesian:
+            scored_result = score_ebay_candidate_value(
+                candidate,
+                peer_price=args.peer_price,
+                worth_buying_model_path=args.worth_buying_model_path,
+                top_k_neighbors=args.top_k_neighbors,
+                ewom_model_paths=_resolve_ewom_model_paths(args),
+                include_shipping_in_total=not args.exclude_shipping,
+                prefer_converted_usd=args.use_converted_usd,
+                retrieval_candidate_pool_size=args.retrieval_candidate_pool_size,
+                min_peer_price_ratio=args.min_peer_price_ratio,
+                min_peer_neighbor_count=args.min_peer_neighbors,
+            )
+            print_json(
+                summarize_ebay_candidate_value_result(scored_result)
+                if args.summary
+                else scored_result
+            )
+            continue
+        print_json(candidate.to_output_dict())
+
+
+def _resolve_ewom_model_paths(args) -> dict[str, str] | None:
+    overrides = {
+        "helpfulness_model_path": args.helpfulness_model_path,
+        "helpfulness_feature_builder_path": args.helpfulness_feature_builder_path,
+        "sentiment_model_path": args.sentiment_model_path,
+        "sentiment_feature_builder_path": args.sentiment_feature_builder_path,
+    }
+    resolved = {key: value for key, value in overrides.items() if value}
+    return resolved or None
+
+
+def _parse_k_values(raw_value: str) -> list[int]:
+    values: list[int] = []
+    for part in str(raw_value).split(","):
+        stripped = part.strip()
+        if not stripped:
+            continue
+        values.append(int(stripped))
+    if not values:
+        raise ValueError("--k-values must contain at least one integer.")
+    return values
+
+
+def _default_k_sweep_output_path(candidate) -> Path:
+    item_id = (
+        getattr(candidate, "legacy_item_id", None)
+        or getattr(candidate, "product_id", None)
+        or "ebay_candidate"
+    )
+    return PROJECT_ROOT / "value" / "artifacts" / f"ebay_k_sweep_{item_id}.html"
 
 
 if __name__ == "__main__":

@@ -26,3 +26,4 @@ data/helpfulness/*.json
 # Trained model artifacts
 models/**/*.joblib
 models/**/*.json
+__MACOSX/

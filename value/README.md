@@ -206,6 +206,18 @@ concatenating:
 - description
 - flattened key-value metadata details
 
+The split builder now also emits a coarse `listing_kind` label for retrieval
+filtering. Current values are:
+
+- `device`
+- `case`
+- `cable`
+- `charger`
+- `tips`
+- `cleaning`
+- `accessory`
+- `other`
+
 ```mermaid
 flowchart LR
     A[title]
@@ -638,6 +650,11 @@ flowchart LR
 ```bash
 python -m value.run_bayesian_value_model --mock --pretty
 python -m value.run_bayesian_value_model --input ./bayesian_value_input.json --pretty
+python -m value.run_bayesian_value_model \
+  --mock \
+  --ewom-mock-json mock/mock_ewom.json \
+  --ewom-mock-case-id listing_feedback_mixed_half_good_half_bad \
+  --pretty
 ```
 
 Returned fields:
@@ -648,6 +665,104 @@ Returned fields:
 - `most_likely_component_states`
 - `evidence`
 - `derived_metrics`
+- `resolved_input`
+- `fused_agent_signals` when an eWOM/trust result is fused in
+
+### eBay Live Scoring
+
+If you have eBay API credentials configured via `EBAY_CLIENT_ID`,
+`EBAY_CLIENT_SECRET`, and `EBAY_ENVIRONMENT`, the normalization script can now
+fetch a live eBay listing, run seller feedback through the eWOM stack, and then
+score the result with the Bayesian value model.
+
+Basic run:
+
+```bash
+python scripts/run_normalization.py \
+  --url "https://www.ebay.com.sg/itm/206158794969" \
+  --score-bayesian
+```
+
+Compact summary output:
+
+```bash
+python scripts/run_normalization.py \
+  --url "https://www.ebay.com.sg/itm/206158794969" \
+  --score-bayesian \
+  --summary
+```
+
+Compare two scored listings:
+
+```bash
+python scripts/run_normalization.py \
+  --url "https://www.ebay.com.sg/itm/206158794969" \
+  --url "https://www.ebay.com.sg/itm/197809836976" \
+  --score-bayesian \
+  --compare \
+  --summary
+```
+
+Optional peer-price inputs:
+
+```bash
+python scripts/run_normalization.py \
+  --url "https://www.ebay.com.sg/itm/206158794969" \
+  --score-bayesian \
+  --peer-price 149.0
+
+python scripts/run_normalization.py \
+  --url "https://www.ebay.com.sg/itm/206158794969" \
+  --score-bayesian \
+  --worth-buying-model-path value/artifacts/amazon_worth_buying_quick.joblib
+
+python scripts/run_normalization.py \
+  --url "https://www.ebay.com.sg/itm/206158794969" \
+  --score-bayesian \
+  --worth-buying-model-path value/artifacts/amazon_worth_buying_quick.joblib \
+  --use-converted-usd \
+  --retrieval-candidate-pool-size 500 \
+  --top-k-neighbors 5 \
+  --min-peer-price-ratio 0.50 \
+  --min-peer-neighbors 3 \
+  --summary
+```
+
+In that mode, the retriever now pulls a larger raw candidate pool from the
+Electronics catalog, reranks the pool with stricter product-family checks, and
+then estimates `peer_price` from the final top matches. If the remaining
+neighbors are too thin, or if the inferred peer price is below the configured
+`--min-peer-price-ratio` cutoff, the bridge drops `peer_price` and the Bayesian
+model falls back to the no-peer-price path. Use `--min-peer-neighbors` to
+require a minimum number of accepted reranked matches before price evidence is
+trusted. Use `--use-converted-usd` when you want the eBay side to prefer
+eBay-provided USD conversions (`convertedFromValue`) instead of the localized
+marketplace currency.
+
+To inspect how retrieval behaves across different `k` values and generate a
+graph:
+
+```bash
+python scripts/run_normalization.py \
+  --url "https://www.ebay.com.sg/itm/206158794969" \
+  --score-bayesian \
+  --worth-buying-model-path value/artifacts/amazon_worth_buying_quick.joblib \
+  --k-values 1,3,5,10,20 \
+  --summary
+```
+
+In scoring mode, the output includes:
+
+- normalized eBay `candidate` data
+- optional retrieval-side `market_context` with inferred `peer_price`
+- optional `ewom_result` from seller feedback texts
+- final `bayesian_result`
+- a retrieval-aware final prediction that can return `insufficient_evidence`
+  when price context is missing or too weak, even if the raw Bayesian
+  probability is still computed for debugging
+
+With `--k-values`, the command also writes an HTML plot under
+`value/artifacts/` unless you override the path with `--k-sweep-output`.
 
 ## 5. Combined Retrieval + Bayesian Pipeline
 

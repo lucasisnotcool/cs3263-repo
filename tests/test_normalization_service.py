@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import requests
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -23,6 +25,11 @@ class FakeMarketplaceClient(MarketplaceClient):
                 "feedbackPercentage": 99.8,
             },
             "product": {"epid": "4062765295"},
+        }
+
+    def get_items_by_item_group(self, item_group_id: str):
+        return {
+            "items": [],
         }
 
     def search_by_epid(self, epid: str, limit: int = 5):
@@ -125,3 +132,80 @@ def test_candidate_output_dict_has_fixed_schema():
     assert output["product_rating_count"] is None
     assert output["product_rating_histogram"] is None
     assert output["product_average_rating"] is None
+
+
+class FakeVariationMarketplaceClient(MarketplaceClient):
+    def get_item_by_legacy_id(self, legacy_item_id: str):
+        response = requests.Response()
+        response.status_code = 400
+        response._content = (
+            b'{"errors":[{"errorId":11006,"message":"The legacy ID is invalid.",'
+            b'"parameters":[{"name":"itemGroupHref","value":"https://api.ebay.com/buy/browse/v1/item/get_items_by_item_group?item_group_id=99887766"}]}]}'
+        )
+        raise requests.HTTPError("400 Client Error", response=response)
+
+    def get_items_by_item_group(self, item_group_id: str):
+        assert item_group_id == "99887766"
+        return {
+            "items": [
+                {
+                    "itemId": "v1|275276813011|100000000000001|0",
+                    "legacyItemId": "275276813011",
+                    "title": "JFJ Easy Pro Compatible Buffing Pad/s (JFJ EasyPro) - 2 Pads",
+                    "condition": "New",
+                    "price": {"value": "9.99", "currency": "GBP"},
+                    "estimatedAvailabilities": [
+                        {"estimatedAvailabilityStatus": "IN_STOCK"}
+                    ],
+                    "seller": {
+                        "username": "seller_123",
+                        "feedbackScore": 42,
+                        "feedbackPercentage": 99.8,
+                    },
+                    "localizedAspects": [
+                        {"name": "MPN", "value": "2 Pads"},
+                        {"name": "Brand", "value": "JFJ"},
+                    ],
+                    "product": {"epid": "4062765295"},
+                },
+                {
+                    "itemId": "v1|275276813011|100000000000002|0",
+                    "legacyItemId": "275276813011",
+                    "title": "JFJ Easy Pro Compatible Buffing Pad/s (JFJ EasyPro) - 5 Pads",
+                    "condition": "New",
+                    "price": {"value": "19.99", "currency": "GBP"},
+                    "estimatedAvailabilities": [
+                        {"estimatedAvailabilityStatus": "LIMITED_STOCK"}
+                    ],
+                    "seller": {
+                        "username": "seller_123",
+                        "feedbackScore": 42,
+                        "feedbackPercentage": 99.8,
+                    },
+                    "localizedAspects": [
+                        {"name": "MPN", "value": "5 Pads"},
+                        {"name": "Brand", "value": "JFJ"},
+                    ],
+                    "product": {"epid": "4062765295"},
+                },
+            ]
+        }
+
+    def search_by_epid(self, epid: str, limit: int = 5):
+        return {"itemSummaries": []}
+
+
+def test_normalize_falls_back_to_item_group_for_variation_listing():
+    service = NormalizationService(
+        marketplace_client=FakeVariationMarketplaceClient(),
+        url_parser=EbayUrlParser(),
+        feedback_client=FakeFeedbackClient(),
+    )
+
+    candidate = service.normalize("https://www.ebay.com.sg/itm/275276813011")
+
+    assert candidate.legacy_item_id == "275276813011"
+    assert candidate.rest_item_id == "v1|275276813011|100000000000001|0"
+    assert candidate.title == "JFJ Easy Pro Compatible Buffing Pad/s (JFJ EasyPro) - 2 Pads"
+    assert candidate.price == {"value": "9.99", "currency": "GBP"}
+    assert candidate.item_specifics == {"MPN": "2 Pads", "Brand": "JFJ"}

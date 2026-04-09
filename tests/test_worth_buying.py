@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from value import WorthBuyingConfig, score_worth_buying_split, train_worth_buying_pipeline
+from value.worth_buying import inspect_worth_buying_catalog_neighbors, load_model
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -144,6 +145,107 @@ class WorthBuyingPipelineTests(unittest.TestCase):
             scored = pd.read_csv(score_output_path)
             self.assertIn("worth_buying_score", scored.columns)
             self.assertIn("verdict", scored.columns)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_kind_aware_retrieval_prefers_same_listing_kind(self) -> None:
+        tmpdir = Path("data") / "test_artifacts" / f"worth_buying_kind_{uuid.uuid4().hex}"
+        tmpdir.mkdir(parents=True, exist_ok=True)
+        try:
+            train_path = tmpdir / "train.jsonl"
+            output_prefix = tmpdir / "artifacts" / "worth_buying"
+
+            train_rows = [
+                {
+                    "parent_asin": "D1",
+                    "title": "Apple AirPods Pro Wireless Earbuds",
+                    "store": "Apple",
+                    "main_category": "All Electronics",
+                    "listing_kind": "device",
+                    "product_document": "apple airpods pro wireless earbuds bluetooth noise canceling",
+                    "price": 189.0,
+                    "average_rating": 4.7,
+                    "rating_number": 1800,
+                    "review_count": 1600,
+                    "verified_purchase_rate": 0.96,
+                    "helpful_vote_total": 400,
+                    "helpful_vote_avg": 0.25,
+                    "avg_review_rating": 4.7,
+                },
+                {
+                    "parent_asin": "D2",
+                    "title": "Wireless Earbuds In Ear Noise Cancelling",
+                    "store": "Acme",
+                    "main_category": "All Electronics",
+                    "listing_kind": "device",
+                    "product_document": "wireless earbuds in ear noise canceling bluetooth",
+                    "price": 79.0,
+                    "average_rating": 4.3,
+                    "rating_number": 500,
+                    "review_count": 450,
+                    "verified_purchase_rate": 0.91,
+                    "helpful_vote_total": 80,
+                    "helpful_vote_avg": 0.18,
+                    "avg_review_rating": 4.2,
+                },
+                {
+                    "parent_asin": "C1",
+                    "title": "AirPods Pro Charging Cable",
+                    "store": "CableCo",
+                    "main_category": "Cell Phones & Accessories",
+                    "listing_kind": "cable",
+                    "product_document": "airpods pro charging cable lightning usb c cable",
+                    "price": 12.0,
+                    "average_rating": 4.8,
+                    "rating_number": 800,
+                    "review_count": 760,
+                    "verified_purchase_rate": 0.95,
+                    "helpful_vote_total": 80,
+                    "helpful_vote_avg": 0.11,
+                    "avg_review_rating": 4.7,
+                },
+            ]
+            _write_jsonl(train_path, train_rows)
+
+            metadata = train_worth_buying_pipeline(
+                train_path=train_path,
+                output_prefix=output_prefix,
+                config=WorthBuyingConfig(min_df=1, top_k_neighbors=2, min_neighbors=1),
+            )
+            bundle = load_model(metadata["model_path"])
+
+            diagnostics = inspect_worth_buying_catalog_neighbors(
+                pd.DataFrame(
+                    [
+                        {
+                            "parent_asin": "Q1",
+                            "title": "Apple AirPods Pro (2nd generation) Earbud",
+                            "store": "Apple",
+                            "main_category": "",
+                            "listing_kind": "device",
+                            "product_document": "apple airpods pro 2nd generation earbud in ear bluetooth",
+                            "price": 139.0,
+                            "average_rating": None,
+                            "rating_number": None,
+                            "review_count": 0,
+                            "verified_purchase_rate": None,
+                            "helpful_vote_total": 0.0,
+                            "helpful_vote_avg": 0.0,
+                            "avg_review_rating": None,
+                            "trust_probability": None,
+                            "ewom_score_0_to_100": None,
+                            "ewom_magnitude_0_to_100": None,
+                        }
+                    ]
+                ),
+                model_bundle=bundle,
+                config_overrides={"top_k_neighbors": 2, "min_similarity": 0.02},
+            )
+
+            self.assertEqual(diagnostics[0]["retrieval_listing_kind"], "device")
+            neighbor_titles = [neighbor["title"] for neighbor in diagnostics[0]["neighbors"]]
+            self.assertIn("Apple AirPods Pro Wireless Earbuds", neighbor_titles)
+            self.assertNotIn("AirPods Pro Charging Cable", neighbor_titles)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 

@@ -8,5 +8,9 @@ class MarketplaceClient(ABC):
         pass
 
     @abstractmethod
+    def get_items_by_item_group(self, item_group_id: str) -> Dict[str, Any]:
+        pass
+
+    @abstractmethod
     def search_by_epid(self, epid: str, limit: int = 5) -> Dict[str, Any]:
         pass

@@ -20,6 +20,8 @@ from .listing_kind import infer_listing_kind_from_parts
 from .worth_buying import inspect_worth_buying_catalog_neighbors
 
 SUFFICIENT_RETRIEVAL_STATUSES = {"usable"}
+PRICE_GAP_TIE_MARGIN = 0.02
+NEUTRAL_PRICE_BUCKET = "fair"
 
 PREFERRED_BRAND_KEYS = (
     "brand",
@@ -367,6 +369,9 @@ def score_ebay_candidate_value(
 ) -> dict[str, Any]:
     resolved_candidate = _coerce_candidate(candidate)
     peer_price_source = "manual" if peer_price is not None else "none"
+    default_relative_price_bucket: str | None = None
+    price_considered = peer_price is not None
+    price_note: str | None = None
     base_input = build_bayesian_input_from_candidate(
         resolved_candidate,
         peer_price=peer_price,
@@ -386,8 +391,12 @@ def score_ebay_candidate_value(
             min_peer_price_ratio=min_peer_price_ratio,
             min_peer_neighbor_count=min_peer_neighbor_count,
         )
+        retrieval_status = str(market_context.get("retrieval_status") or "").strip()
         inferred_peer_price = _to_optional_float(market_context.get("peer_price"))
-        if inferred_peer_price is not None:
+        if (
+            inferred_peer_price is not None
+            and retrieval_status in SUFFICIENT_RETRIEVAL_STATUSES
+        ):
             base_input = build_bayesian_input_from_candidate(
                 resolved_candidate,
                 peer_price=inferred_peer_price,
@@ -395,6 +404,15 @@ def score_ebay_candidate_value(
                 prefer_converted_usd=prefer_converted_usd,
             )
             peer_price_source = "retrieval"
+            price_considered = True
+        elif retrieval_status and retrieval_status not in SUFFICIENT_RETRIEVAL_STATUSES:
+            default_relative_price_bucket = NEUTRAL_PRICE_BUCKET
+            price_considered = False
+            price_note = (
+                "We could not find enough trustworthy similar-item price data, so the "
+                "Bayesian score uses a neutral fair-price bucket and does not consider "
+                "price advantage."
+            )
 
     resolved_ewom_result: dict[str, Any] | None = None
     fused_agent_signals: dict[str, Any] | None = None
@@ -412,7 +430,10 @@ def score_ebay_candidate_value(
             resolved_ewom_result,
         )
 
-    bayesian_result = score_good_value_probability(base_input)
+    bayesian_result = score_good_value_probability(
+        base_input,
+        default_relative_price_bucket=default_relative_price_bucket,
+    )
     bayesian_result["resolved_input"] = asdict(base_input)
     if fused_agent_signals is not None:
         bayesian_result["fused_agent_signals"] = fused_agent_signals
@@ -422,6 +443,8 @@ def score_ebay_candidate_value(
         ),
         market_context=market_context,
         peer_price_source=peer_price_source,
+        price_considered=price_considered,
+        price_note=price_note,
     )
 
     return {
@@ -438,6 +461,9 @@ def score_ebay_candidate_value(
                 prefer_converted_usd=prefer_converted_usd,
             ),
             "peer_price_source": peer_price_source,
+            "price_considered": bool(price_considered),
+            "price_note": price_note,
+            "default_relative_price_bucket": default_relative_price_bucket,
         },
     }
 
@@ -756,12 +782,57 @@ def summarize_ebay_candidate_value_result(
             if isinstance(result.get("market_context"), Mapping)
             else None
         ),
+        "price_considered": (
+            result.get("pricing", {}).get("price_considered")
+            if isinstance(result.get("pricing"), Mapping)
+            else None
+        ),
+        "price_note": (
+            result.get("pricing", {}).get("price_note")
+            if isinstance(result.get("pricing"), Mapping)
+            else None
+        ),
         "peer_price_source": (
             result.get("pricing", {}).get("peer_price_source")
             if isinstance(result.get("pricing"), Mapping)
             else None
         ),
     }
+
+
+def _build_comparison_summary(
+    result: Mapping[str, Any],
+    *,
+    probability_threshold: float,
+    force_neutral_price: bool,
+) -> dict[str, Any]:
+    summary = summarize_ebay_candidate_value_result(
+        result,
+        probability_threshold=probability_threshold,
+    )
+    if not force_neutral_price:
+        return summary
+
+    neutral_probability = _score_neutral_price_probability_from_result(result)
+    summary["good_value_probability"] = neutral_probability
+    summary["prediction"] = _resolve_probability_label(
+        neutral_probability,
+        threshold=probability_threshold,
+    )
+    summary["prediction_reason"] = (
+        "bayesian_probability_without_price"
+        if neutral_probability is not None
+        else None
+    )
+    summary["peer_price"] = None
+    summary["price_gap_vs_peer"] = None
+    summary["price_considered"] = False
+    summary["price_note"] = (
+        "Comparison used a neutral fair-price bucket because at least one listing "
+        "lacked trustworthy similar-item price data."
+    )
+    summary["peer_price_source"] = "none"
+    return summary
 
 
 def compare_ebay_candidate_value_results(
@@ -771,19 +842,34 @@ def compare_ebay_candidate_value_results(
     probability_threshold: float = 0.50,
     tie_margin: float = 0.03,
 ) -> dict[str, Any]:
-    summary_a = summarize_ebay_candidate_value_result(
+    use_neutral_price_compare = not (
+        _result_has_trusted_price_context(result_a)
+        and _result_has_trusted_price_context(result_b)
+    )
+    summary_a = _build_comparison_summary(
         result_a,
         probability_threshold=probability_threshold,
+        force_neutral_price=use_neutral_price_compare,
     )
-    summary_b = summarize_ebay_candidate_value_result(
+    summary_b = _build_comparison_summary(
         result_b,
         probability_threshold=probability_threshold,
+        force_neutral_price=use_neutral_price_compare,
     )
     verdict, reasons = _compare_scored_summaries(
         summary_a,
         summary_b,
         tie_margin=tie_margin,
     )
+    if use_neutral_price_compare:
+        reasons = [
+            (
+                "At least one listing lacked trustworthy similar-item price data, so both "
+                "listings were rescored with a neutral fair-price bucket. This comparison "
+                "does not consider price advantage."
+            ),
+            *reasons,
+        ]
     probability_a = _to_optional_float(summary_a.get("good_value_probability"))
     probability_b = _to_optional_float(summary_b.get("good_value_probability"))
     return {
@@ -791,6 +877,9 @@ def compare_ebay_candidate_value_results(
         "listing_b": summary_b,
         "comparison": {
             "verdict": verdict,
+            "price_comparison_mode": (
+                "neutral_fallback" if use_neutral_price_compare else "peer_price"
+            ),
             "good_value_probability_delta": (
                 probability_a - probability_b
                 if probability_a is not None and probability_b is not None
@@ -800,6 +889,22 @@ def compare_ebay_candidate_value_results(
             "reasons": reasons,
         },
     }
+
+
+def _score_neutral_price_probability_from_result(result: Mapping[str, Any]) -> float | None:
+    bayesian_result = result.get("bayesian_result")
+    if not isinstance(bayesian_result, Mapping):
+        return None
+    resolved_input = bayesian_result.get("resolved_input")
+    if not isinstance(resolved_input, Mapping):
+        return None
+    neutral_input = dict(resolved_input)
+    neutral_input["peer_price"] = None
+    rescored = score_good_value_probability(
+        BayesianValueInput.from_mapping(neutral_input),
+        default_relative_price_bucket=NEUTRAL_PRICE_BUCKET,
+    )
+    return _to_optional_float(rescored.get("good_value_probability"))
 
 
 def resolve_candidate_total_price(
@@ -1731,8 +1836,27 @@ def _build_ebay_value_decision(
     good_value_probability: float | None,
     market_context: Mapping[str, Any] | None,
     peer_price_source: str,
+    price_considered: bool,
+    price_note: str | None,
     probability_threshold: float = 0.50,
-) -> dict[str, str | None]:
+) -> dict[str, str | bool | None]:
+    if not price_considered and price_note:
+        prediction = _resolve_probability_label(
+            good_value_probability,
+            threshold=probability_threshold,
+        )
+        reason = (
+            "bayesian_probability_without_price"
+            if good_value_probability is not None
+            else None
+        )
+        return {
+            "prediction": prediction,
+            "reason": reason,
+            "price_considered": False,
+            "price_note": price_note,
+        }
+
     prediction, reason = _resolve_prediction_from_market_context(
         good_value_probability,
         market_context.get("retrieval_status") if isinstance(market_context, Mapping) else None,
@@ -1742,6 +1866,8 @@ def _build_ebay_value_decision(
     return {
         "prediction": prediction,
         "reason": reason,
+        "price_considered": price_considered,
+        "price_note": price_note,
     }
 
 
@@ -1755,6 +1881,8 @@ def _compare_scored_summaries(
     prediction_b = str(summary_b.get("prediction") or "").strip()
     probability_a = _to_optional_float(summary_a.get("good_value_probability"))
     probability_b = _to_optional_float(summary_b.get("good_value_probability"))
+    price_gap_a = _to_optional_float(summary_a.get("price_gap_vs_peer"))
+    price_gap_b = _to_optional_float(summary_b.get("price_gap_vs_peer"))
     title_a = str(summary_a.get("title") or summary_a.get("source_url") or "listing_a")
     title_b = str(summary_b.get("title") or summary_b.get("source_url") or "listing_b")
 
@@ -1777,6 +1905,24 @@ def _compare_scored_summaries(
 
     delta = probability_a - probability_b
     if abs(delta) <= max(0.0, float(tie_margin)):
+        if price_gap_a is not None and price_gap_b is not None:
+            price_gap_delta = price_gap_a - price_gap_b
+            if abs(price_gap_delta) > PRICE_GAP_TIE_MARGIN:
+                if price_gap_delta > 0.0:
+                    return "better_A", [
+                        (
+                            f"Bayesian probabilities are tied, so the comparison falls back to "
+                            f"price gap vs peer. Listing A is cheaper relative to peers "
+                            f"({price_gap_a:.4f} vs {price_gap_b:.4f})."
+                        )
+                    ]
+                return "better_B", [
+                    (
+                        f"Bayesian probabilities are tied, so the comparison falls back to "
+                        f"price gap vs peer. Listing B is cheaper relative to peers "
+                        f"({price_gap_b:.4f} vs {price_gap_a:.4f})."
+                    )
+                ]
         return "tie", [
             (
                 f"{title_a} and {title_b} are within the tie margin "
@@ -1816,3 +1962,18 @@ def _resolve_prediction_from_market_context(
         _resolve_probability_label(probability, threshold=threshold),
         "bayesian_probability" if probability is not None else None,
     )
+
+
+def _result_has_trusted_price_context(result: Mapping[str, Any]) -> bool:
+    pricing = result.get("pricing")
+    pricing = pricing if isinstance(pricing, Mapping) else {}
+    peer_price_source = str(pricing.get("peer_price_source") or "none").strip().lower()
+    if peer_price_source == "manual":
+        return True
+    if peer_price_source != "retrieval":
+        return False
+
+    market_context = result.get("market_context")
+    market_context = market_context if isinstance(market_context, Mapping) else {}
+    retrieval_status = str(market_context.get("retrieval_status") or "").strip()
+    return retrieval_status in SUFFICIENT_RETRIEVAL_STATUSES

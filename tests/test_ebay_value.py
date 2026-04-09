@@ -166,7 +166,7 @@ class EbayValueBridgeTests(unittest.TestCase):
         self.assertEqual(result["pricing"]["total_price_currency"], "USD")
 
     @patch("value.ebay_value.infer_candidate_market_context")
-    def test_score_ebay_candidate_value_marks_missing_retrieval_price_as_insufficient(
+    def test_score_ebay_candidate_value_uses_neutral_price_when_retrieval_is_missing(
         self,
         infer_market_context_mock,
     ) -> None:
@@ -201,10 +201,25 @@ class EbayValueBridgeTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(result["decision"]["prediction"], "insufficient_evidence")
-        self.assertEqual(result["decision"]["reason"], "all_neighbors_filtered")
+        self.assertEqual(result["decision"]["prediction"], "good_value")
+        self.assertEqual(
+            result["decision"]["reason"],
+            "bayesian_probability_without_price",
+        )
+        self.assertFalse(result["decision"]["price_considered"])
+        self.assertIn("does not consider price advantage", result["decision"]["price_note"])
         self.assertEqual(result["pricing"]["peer_price_source"], "none")
+        self.assertFalse(result["pricing"]["price_considered"])
+        self.assertEqual(result["pricing"]["default_relative_price_bucket"], "fair")
         self.assertIsNone(result["bayesian_result"]["resolved_input"]["peer_price"])
+        self.assertEqual(
+            result["bayesian_result"]["derived_metrics"]["relative_price_bucket"],
+            "fair",
+        )
+        self.assertEqual(
+            result["bayesian_result"]["derived_metrics"]["relative_price_bucket_source"],
+            "default",
+        )
 
     def test_retrieval_title_prefers_structured_model_over_noisy_listing_title(self) -> None:
         candidate = Candidate(
@@ -595,9 +610,11 @@ class EbayValueBridgeTests(unittest.TestCase):
         self.assertEqual(summary["seller_feedback_review_count"], 8)
         self.assertIsNone(summary["retrieval_status"])
         self.assertIsNone(summary["retrieved_neighbor_count"])
+        self.assertIsNone(summary["price_considered"])
+        self.assertIsNone(summary["price_note"])
         self.assertIsNone(summary["peer_price_source"])
 
-    def test_summarize_ebay_candidate_value_result_marks_missing_retrieval_price_as_insufficient(self) -> None:
+    def test_summarize_ebay_candidate_value_result_marks_missing_retrieval_price_as_price_neutral(self) -> None:
         result = {
             "candidate": {
                 "source_url": "https://www.ebay.com.sg/itm/123",
@@ -606,10 +623,12 @@ class EbayValueBridgeTests(unittest.TestCase):
             "pricing": {
                 "total_price_currency": "USD",
                 "peer_price_source": "none",
+                "price_considered": False,
+                "price_note": "Bayesian score uses a neutral fair-price bucket.",
             },
             "decision": {
-                "prediction": "insufficient_evidence",
-                "reason": "all_neighbors_filtered",
+                "prediction": "good_value",
+                "reason": "bayesian_probability_without_price",
             },
             "market_context": {
                 "retrieval_status": "all_neighbors_filtered",
@@ -634,10 +653,12 @@ class EbayValueBridgeTests(unittest.TestCase):
 
         summary = summarize_ebay_candidate_value_result(result)
 
-        self.assertEqual(summary["prediction"], "insufficient_evidence")
-        self.assertEqual(summary["prediction_reason"], "all_neighbors_filtered")
+        self.assertEqual(summary["prediction"], "good_value")
+        self.assertEqual(summary["prediction_reason"], "bayesian_probability_without_price")
         self.assertEqual(summary["retrieval_status"], "all_neighbors_filtered")
         self.assertEqual(summary["retrieved_neighbor_count"], 0)
+        self.assertFalse(summary["price_considered"])
+        self.assertEqual(summary["price_note"], "Bayesian score uses a neutral fair-price bucket.")
         self.assertEqual(summary["peer_price_source"], "none")
 
     def test_compare_ebay_candidate_value_results_prefers_higher_supported_probability(self) -> None:
@@ -710,7 +731,7 @@ class EbayValueBridgeTests(unittest.TestCase):
             0.19,
         )
 
-    def test_compare_ebay_candidate_value_results_respects_insufficient_evidence(self) -> None:
+    def test_compare_ebay_candidate_value_results_uses_neutral_price_when_one_side_lacks_neighbors(self) -> None:
         result_a = {
             "candidate": {
                 "source_url": "https://www.ebay.com.sg/itm/a",
@@ -738,6 +759,7 @@ class EbayValueBridgeTests(unittest.TestCase):
                     "peer_price": 105.0,
                     "trust_probability": 0.80,
                     "ewom_score_0_to_100": 66.0,
+                    "ewom_magnitude_0_to_100": 52.0,
                 },
             },
         }
@@ -749,10 +771,12 @@ class EbayValueBridgeTests(unittest.TestCase):
             "pricing": {
                 "total_price_currency": "SGD",
                 "peer_price_source": "none",
+                "price_considered": False,
+                "price_note": "Neutral fair-price fallback used.",
             },
             "decision": {
-                "prediction": "insufficient_evidence",
-                "reason": "insufficient_peer_neighbors",
+                "prediction": "good_value",
+                "reason": "bayesian_probability_without_price",
             },
             "market_context": {
                 "retrieval_status": "insufficient_peer_neighbors",
@@ -766,6 +790,77 @@ class EbayValueBridgeTests(unittest.TestCase):
                 "resolved_input": {
                     "price": 153.58,
                     "peer_price": None,
+                    "trust_probability": 0.31,
+                    "ewom_score_0_to_100": 42.0,
+                    "ewom_magnitude_0_to_100": 18.0,
+                },
+            },
+        }
+
+        comparison = compare_ebay_candidate_value_results(result_a, result_b)
+
+        self.assertEqual(comparison["comparison"]["verdict"], "better_A")
+        self.assertEqual(comparison["comparison"]["price_comparison_mode"], "neutral_fallback")
+        self.assertEqual(comparison["listing_a"]["peer_price"], None)
+        self.assertEqual(comparison["listing_b"]["peer_price"], None)
+        self.assertIn("does not consider price advantage", comparison["comparison"]["reasons"][0])
+
+    def test_compare_ebay_candidate_value_results_breaks_probability_ties_with_price_gap(self) -> None:
+        result_a = {
+            "candidate": {
+                "source_url": "https://www.ebay.com.sg/itm/a",
+                "title": "Listing A",
+            },
+            "pricing": {
+                "total_price_currency": "USD",
+                "peer_price_source": "retrieval",
+            },
+            "decision": {
+                "prediction": "good_value",
+                "reason": "bayesian_probability",
+            },
+            "market_context": {
+                "retrieval_status": "usable",
+                "neighbor_count": 5,
+            },
+            "bayesian_result": {
+                "good_value_probability": 0.8892,
+                "derived_metrics": {
+                    "price_gap_vs_peer": 0.4737,
+                },
+                "resolved_input": {
+                    "price": 109.0,
+                    "peer_price": 207.1,
+                    "trust_probability": 0.77,
+                    "ewom_score_0_to_100": 60.9,
+                },
+            },
+        }
+        result_b = {
+            "candidate": {
+                "source_url": "https://www.ebay.com.sg/itm/b",
+                "title": "Listing B",
+            },
+            "pricing": {
+                "total_price_currency": "USD",
+                "peer_price_source": "retrieval",
+            },
+            "decision": {
+                "prediction": "good_value",
+                "reason": "bayesian_probability",
+            },
+            "market_context": {
+                "retrieval_status": "usable",
+                "neighbor_count": 5,
+            },
+            "bayesian_result": {
+                "good_value_probability": 0.8892,
+                "derived_metrics": {
+                    "price_gap_vs_peer": 0.2506,
+                },
+                "resolved_input": {
+                    "price": 153.58,
+                    "peer_price": 204.93,
                     "trust_probability": 0.84,
                     "ewom_score_0_to_100": 60.96,
                 },
@@ -774,8 +869,12 @@ class EbayValueBridgeTests(unittest.TestCase):
 
         comparison = compare_ebay_candidate_value_results(result_a, result_b)
 
-        self.assertEqual(comparison["comparison"]["verdict"], "insufficient_evidence")
-        self.assertIn("Listing B lacks sufficient price evidence", comparison["comparison"]["reasons"][0])
+        self.assertEqual(comparison["comparison"]["verdict"], "better_A")
+        self.assertAlmostEqual(
+            comparison["comparison"]["good_value_probability_delta"],
+            0.0,
+        )
+        self.assertIn("falls back to price gap vs peer", comparison["comparison"]["reasons"][0])
 
     @patch("value.ebay_value.inspect_worth_buying_catalog_neighbors")
     def test_sweep_candidate_market_context_k_builds_sorted_k_rows(

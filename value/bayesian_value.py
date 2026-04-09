@@ -10,10 +10,46 @@ from .bayes import DiscreteBayesNode, DiscreteBayesianNetwork
 
 
 THREE_STATES = ("low", "medium", "high")
-POLARITY_STATES = ("negative", "mixed", "positive")
+TRUST_SIGNAL_STATES = ("very_low", "low", "medium", "high", "very_high")
+POLARITY_STATES = (
+    "very_negative",
+    "negative",
+    "mixed",
+    "positive",
+    "very_positive",
+)
 STRENGTH_STATES = ("weak", "medium", "strong")
-PRICE_STATES = ("much_pricier", "pricier", "fair", "cheaper", "much_cheaper")
+PRICE_STATES = (
+    "extreme_pricier",
+    "much_pricier",
+    "pricier",
+    "fair",
+    "cheaper",
+    "much_cheaper",
+    "extreme_cheaper",
+)
 TARGET_STATES = ("no", "yes")
+
+# Final intended emphasis:
+# - price context should be the strongest signal when it is trustworthy
+# - trust and review evidence should matter similarly
+# - all other auxiliary fields should only provide a light nudge
+REVIEW_EVIDENCE_WEIGHTS = {
+    "polarity": 0.80,
+    "strength": 0.12,
+    "volume": 0.08,
+}
+PRODUCT_QUALITY_WEIGHTS = {
+    "trustworthiness": 0.4166666666666667,
+    "review_evidence": 0.4166666666666667,
+    "rating_signal": 0.12,
+    "verified_signal": 0.04666666666666667,
+}
+GOOD_VALUE_WEIGHTS = {
+    "product_quality": 0.60,
+    "relative_price": 0.35,
+    "service_support": 0.05,
+}
 
 
 @dataclass(frozen=True)
@@ -127,11 +163,15 @@ def score_good_value_probability(
     raw_input: BayesianValueInput | Mapping[str, Any],
     *,
     network: DiscreteBayesianNetwork | None = None,
+    default_relative_price_bucket: str | None = None,
 ) -> dict[str, Any]:
     resolved_input = (
         raw_input if isinstance(raw_input, BayesianValueInput) else BayesianValueInput.from_mapping(raw_input)
     )
-    evidence, derived = build_value_evidence(resolved_input)
+    evidence, derived = build_value_evidence(
+        resolved_input,
+        default_relative_price_bucket=default_relative_price_bucket,
+    )
     resolved_network = network or default_bayesian_value_network()
 
     good_value_posterior = resolved_network.posterior("GoodValueForMoney", evidence)
@@ -159,7 +199,11 @@ def score_good_value_probability(
     }
 
 
-def build_value_evidence(raw_input: BayesianValueInput) -> tuple[dict[str, str], dict[str, float | None]]:
+def build_value_evidence(
+    raw_input: BayesianValueInput,
+    *,
+    default_relative_price_bucket: str | None = None,
+) -> tuple[dict[str, str], dict[str, float | None | str]]:
     evidence: dict[str, str] = {}
 
     trust_signal = _bucket_trust_probability(raw_input.trust_probability)
@@ -190,8 +234,14 @@ def build_value_evidence(raw_input: BayesianValueInput) -> tuple[dict[str, str],
         raw_input.price,
         raw_input.peer_price,
     )
+    relative_price_bucket_source: str | None = None
     if relative_price_bucket is not None:
         evidence["RelativePriceBucket"] = relative_price_bucket
+        relative_price_bucket_source = "peer_price"
+    elif default_relative_price_bucket in PRICE_STATES:
+        evidence["RelativePriceBucket"] = str(default_relative_price_bucket)
+        relative_price_bucket = str(default_relative_price_bucket)
+        relative_price_bucket_source = "default"
 
     warranty_signal = _bucket_warranty(raw_input.warranty_months)
     if warranty_signal is not None:
@@ -205,6 +255,8 @@ def build_value_evidence(raw_input: BayesianValueInput) -> tuple[dict[str, str],
         "price_gap_vs_peer": price_gap_vs_peer,
         "price": raw_input.price,
         "peer_price": raw_input.peer_price,
+        "relative_price_bucket": relative_price_bucket,
+        "relative_price_bucket_source": relative_price_bucket_source,
     }
     return evidence, derived
 
@@ -214,13 +266,25 @@ def default_bayesian_value_network() -> DiscreteBayesianNetwork:
     nodes = [
         _root_node(
             "TrustSignal",
-            THREE_STATES,
-            {"low": 0.25, "medium": 0.45, "high": 0.30},
+            TRUST_SIGNAL_STATES,
+            {
+                "very_low": 0.08,
+                "low": 0.17,
+                "medium": 0.30,
+                "high": 0.27,
+                "very_high": 0.18,
+            },
         ),
         _root_node(
             "ReviewPolarity",
             POLARITY_STATES,
-            {"negative": 0.20, "mixed": 0.35, "positive": 0.45},
+            {
+                "very_negative": 0.08,
+                "negative": 0.16,
+                "mixed": 0.30,
+                "positive": 0.26,
+                "very_positive": 0.20,
+            },
         ),
         _root_node(
             "ReviewStrength",
@@ -246,11 +310,13 @@ def default_bayesian_value_network() -> DiscreteBayesianNetwork:
             "RelativePriceBucket",
             PRICE_STATES,
             {
-                "much_pricier": 0.10,
-                "pricier": 0.20,
+                "extreme_pricier": 0.04,
+                "much_pricier": 0.08,
+                "pricier": 0.18,
                 "fair": 0.40,
-                "cheaper": 0.20,
-                "much_cheaper": 0.10,
+                "cheaper": 0.18,
+                "much_cheaper": 0.08,
+                "extreme_cheaper": 0.04,
             },
         ),
         _root_node(
@@ -267,11 +333,7 @@ def default_bayesian_value_network() -> DiscreteBayesianNetwork:
             name="Trustworthiness",
             states=THREE_STATES,
             parents=("TrustSignal",),
-            cpt={
-                ("low",): {"low": 0.75, "medium": 0.20, "high": 0.05},
-                ("medium",): {"low": 0.20, "medium": 0.60, "high": 0.20},
-                ("high",): {"low": 0.05, "medium": 0.25, "high": 0.70},
-            },
+            cpt=_build_trustworthiness_cpt(),
         ),
         DiscreteBayesNode(
             name="ReviewEvidence",
@@ -301,75 +363,113 @@ def default_bayesian_value_network() -> DiscreteBayesianNetwork:
     return DiscreteBayesianNetwork(nodes)
 
 
+def _build_trustworthiness_cpt() -> dict[tuple[str, ...], dict[str, float]]:
+    cpt: dict[tuple[str, ...], dict[str, float]] = {}
+    signal_score = {
+        "very_low": 0.00,
+        "low": 0.25,
+        "medium": 0.50,
+        "high": 0.75,
+        "very_high": 1.00,
+    }
+
+    for trust_signal in TRUST_SIGNAL_STATES:
+        cpt[(trust_signal,)] = _three_state_distribution(
+            2.0 * signal_score[trust_signal]
+        )
+    return cpt
+
+
 def _build_review_evidence_cpt() -> dict[tuple[str, ...], dict[str, float]]:
     cpt: dict[tuple[str, ...], dict[str, float]] = {}
-    polarity_score = {"negative": -1.0, "mixed": 0.0, "positive": 1.0}
-    strength_scale = {"weak": 0.35, "medium": 0.70, "strong": 1.00}
-    volume_bonus = {"low": 0.00, "medium": 0.20, "high": 0.35}
+    polarity_score = {
+        "very_negative": 0.00,
+        "negative": 0.25,
+        "mixed": 0.50,
+        "positive": 0.75,
+        "very_positive": 1.00,
+    }
+    strength_scale = {"weak": 0.00, "medium": 0.50, "strong": 1.00}
+    volume_bonus = {"low": 0.00, "medium": 0.50, "high": 1.00}
 
     for polarity in POLARITY_STATES:
         for strength in STRENGTH_STATES:
             for volume in THREE_STATES:
-                score = 1.0
-                score += polarity_score[polarity] * (0.70 + 0.30 * strength_scale[strength])
-                score += volume_bonus[volume]
-                cpt[(polarity, strength, volume)] = _three_state_distribution(score)
+                combined_score = (
+                    REVIEW_EVIDENCE_WEIGHTS["polarity"] * polarity_score[polarity]
+                    + REVIEW_EVIDENCE_WEIGHTS["strength"] * strength_scale[strength]
+                    + REVIEW_EVIDENCE_WEIGHTS["volume"] * volume_bonus[volume]
+                )
+                cpt[(polarity, strength, volume)] = _three_state_distribution(
+                    2.0 * combined_score
+                )
     return cpt
 
 
 def _build_service_support_cpt() -> dict[tuple[str, ...], dict[str, float]]:
     cpt: dict[tuple[str, ...], dict[str, float]] = {}
-    ordinal = {"low": 0.0, "medium": 1.0, "high": 2.0}
+    ordinal = {"low": 0.0, "medium": 0.5, "high": 1.0}
 
     for warranty in THREE_STATES:
         for returns in THREE_STATES:
-            score = 0.55 * ordinal[warranty] + 0.45 * ordinal[returns]
-            cpt[(warranty, returns)] = _three_state_distribution(score)
+            score = (0.55 * ordinal[warranty]) + (0.45 * ordinal[returns])
+            cpt[(warranty, returns)] = _three_state_distribution(2.0 * score)
     return cpt
 
 
 def _build_product_quality_cpt() -> dict[tuple[str, ...], dict[str, float]]:
     cpt: dict[tuple[str, ...], dict[str, float]] = {}
-    centered = {"low": -1.0, "medium": 0.0, "high": 1.0}
+    normalized = {"low": 0.0, "medium": 0.5, "high": 1.0}
 
     for trustworthiness in THREE_STATES:
         for review_evidence in THREE_STATES:
             for rating_signal in THREE_STATES:
                 for verified_signal in THREE_STATES:
-                    score = 1.0
-                    score += 0.35 * centered[trustworthiness]
-                    score += 0.40 * centered[review_evidence]
-                    score += 0.50 * centered[rating_signal]
-                    score += 0.15 * centered[verified_signal]
+                    score = (
+                        PRODUCT_QUALITY_WEIGHTS["trustworthiness"]
+                        * normalized[trustworthiness]
+                        + PRODUCT_QUALITY_WEIGHTS["review_evidence"]
+                        * normalized[review_evidence]
+                        + PRODUCT_QUALITY_WEIGHTS["rating_signal"]
+                        * normalized[rating_signal]
+                        + PRODUCT_QUALITY_WEIGHTS["verified_signal"]
+                        * normalized[verified_signal]
+                    )
                     cpt[(
                         trustworthiness,
                         review_evidence,
                         rating_signal,
                         verified_signal,
-                    )] = _three_state_distribution(score)
+                    )] = _three_state_distribution(2.0 * score)
     return cpt
 
 
 def _build_good_value_cpt() -> dict[tuple[str, ...], dict[str, float]]:
     cpt: dict[tuple[str, ...], dict[str, float]] = {}
-    quality_weight = {"low": -1.2, "medium": 0.0, "high": 1.2}
+    quality_weight = {"low": 0.0, "medium": 0.5, "high": 1.0}
     price_weight = {
-        "much_pricier": -1.4,
-        "pricier": -0.7,
-        "fair": 0.0,
-        "cheaper": 0.8,
-        "much_cheaper": 1.4,
+        "extreme_pricier": 0.00,
+        "much_pricier": 0.15,
+        "pricier": 0.35,
+        "fair": 0.50,
+        "cheaper": 0.65,
+        "much_cheaper": 0.82,
+        "extreme_cheaper": 1.00,
     }
-    service_weight = {"low": -0.35, "medium": 0.0, "high": 0.35}
+    service_weight = {"low": 0.0, "medium": 0.5, "high": 1.0}
 
     for product_quality in THREE_STATES:
         for relative_price in PRICE_STATES:
             for service_support in THREE_STATES:
-                logit = -0.10
-                logit += 1.60 * quality_weight[product_quality]
-                logit += 1.20 * price_weight[relative_price]
-                logit += 0.40 * service_weight[service_support]
-                p_yes = _sigmoid(logit)
+                combined_score = (
+                    GOOD_VALUE_WEIGHTS["product_quality"]
+                    * quality_weight[product_quality]
+                    + GOOD_VALUE_WEIGHTS["relative_price"]
+                    * price_weight[relative_price]
+                    + GOOD_VALUE_WEIGHTS["service_support"]
+                    * service_weight[service_support]
+                )
+                p_yes = _sigmoid((combined_score - 0.50) * 5.0)
                 cpt[(product_quality, relative_price, service_support)] = {
                     "no": 1.0 - p_yes,
                     "yes": p_yes,
@@ -398,21 +498,29 @@ def _three_state_distribution(score: float) -> dict[str, float]:
 def _bucket_trust_probability(value: float | None) -> str | None:
     if value is None:
         return None
+    if value < 0.20:
+        return "very_low"
     if value < 0.40:
         return "low"
-    if value < 0.70:
+    if value < 0.60:
         return "medium"
-    return "high"
+    if value < 0.82:
+        return "high"
+    return "very_high"
 
 
 def _bucket_review_polarity(value: float | None) -> str | None:
     if value is None:
         return None
-    if value < 42.0:
+    if value < 20.0:
+        return "very_negative"
+    if value < 40.0:
         return "negative"
-    if value <= 58.0:
+    if value < 60.0:
         return "mixed"
-    return "positive"
+    if value < 80.0:
+        return "positive"
+    return "very_positive"
 
 
 def _bucket_review_strength(value: float | None) -> str | None:
@@ -463,6 +571,8 @@ def _bucket_relative_price(
         return None, None
 
     price_gap = (peer_price - price) / peer_price
+    if price_gap > 0.40:
+        return "extreme_cheaper", price_gap
     if price_gap > 0.20:
         return "much_cheaper", price_gap
     if price_gap > 0.05:
@@ -471,7 +581,9 @@ def _bucket_relative_price(
         return "fair", price_gap
     if price_gap >= -0.20:
         return "pricier", price_gap
-    return "much_pricier", price_gap
+    if price_gap >= -0.40:
+        return "much_pricier", price_gap
+    return "extreme_pricier", price_gap
 
 
 def _bucket_warranty(value: float | None) -> str | None:

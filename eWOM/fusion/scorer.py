@@ -32,7 +32,9 @@ class EWOMFusionScorer:
 
     The helpfulness branch acts as a soft gate: reviews predicted as unhelpful
     contribute little even when sentiment is strong. The sentiment branch
-    supplies the sign and strength of the final score.
+    supplies the sign and strength of the final score. At review-set level, the
+    confidence gate is based on effective informative support rather than raw
+    review count, so many weak reviews do not create false confidence.
     """
 
     def __init__(self, config: EWOMFusionConfig | None = None):
@@ -167,7 +169,9 @@ class EWOMFusionScorer:
             weighted_sentiment_strength = 0.0
 
         review_set_gate_scale = max(float(self.config.review_set_gate_scale), 1e-9)
-        review_set_gate = 1.0 - math.exp(-review_count / review_set_gate_scale)
+        review_set_gate = 1.0 - math.exp(
+            -informative_review_weight / review_set_gate_scale
+        )
         final_signed_ewom_score = review_set_gate * weighted_sentiment_polarity
         final_magnitude_ewom_score = review_set_gate * weighted_sentiment_strength
 

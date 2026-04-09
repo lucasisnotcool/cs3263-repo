@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import unittest
 from unittest.mock import patch
 
@@ -48,6 +49,33 @@ class EWOMFusionScorerTests(unittest.TestCase):
         self.assertIsNone(aggregate["mean_deception_probability"])
         self.assertEqual(aggregate["mean_deception_weight"], 1.0)
         self.assertEqual(aggregate["mean_informative_gate"], 0.8)
+
+    def test_aggregate_gate_uses_effective_informative_support(self) -> None:
+        scorer = EWOMFusionScorer()
+        low_informative_reviews = [
+            {
+                "usefulness_probability": 0.1,
+                "helpfulness_gate": 0.1,
+                "deception_weight": 0.5,
+                "informative_gate": 0.05,
+                "positive_probability": 0.9,
+                "negative_probability": 0.1,
+                "sentiment_polarity": 0.8,
+                "sentiment_strength": 0.8,
+            }
+            for _ in range(20)
+        ]
+
+        aggregate = scorer.aggregate(low_informative_reviews)
+        expected_support = 1.0
+        expected_gate = 1.0 - math.exp(
+            -expected_support / scorer.config.review_set_gate_scale
+        )
+
+        self.assertEqual(aggregate["review_count"], 20)
+        self.assertAlmostEqual(aggregate["informative_review_weight"], expected_support)
+        self.assertAlmostEqual(aggregate["review_set_gate"], expected_gate)
+        self.assertLess(aggregate["review_set_gate"], 0.3)
 
 
 class EWOMFusionPredictorTests(unittest.TestCase):

@@ -119,6 +119,7 @@ back to full authenticity weight.
 Reference:
 
 - `eWOM/fusion/scorer.py`
+- `eWOM/fusion/heuristic_report.md`
 
 ## Request And Response Shape
 

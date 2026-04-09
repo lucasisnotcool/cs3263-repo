@@ -17,6 +17,9 @@ It now supports two levels of scoring:
 - review-level fusion for a single review
 - product-level aggregation for a whole set of review texts
 
+For a concise rationale and equation summary, see
+`eWOM/fusion/heuristic_report.md`.
+
 ## Inputs
 
 The fusion layer consumes:
@@ -118,7 +121,7 @@ of averaging raw sentiment alone.
 The aggregation stage does two things:
 
 - it weights each review by its review-level `informative_gate`
-- it applies a second `review_set_gate` based on review volume
+- it applies a second `review_set_gate` based on effective informative support
 
 Implemented rule:
 
@@ -126,14 +129,16 @@ Implemented rule:
 informative_review_weight = sum(informative_gate_i)
 weighted_sentiment_polarity =
     sum(informative_gate_i * sentiment_polarity_i) / informative_review_weight
-review_set_gate = 1 - exp(-review_count / review_set_gate_scale)
+review_set_gate = 1 - exp(-informative_review_weight / review_set_gate_scale)
 final_signed_score = review_set_gate * weighted_sentiment_polarity
 ```
 
 This is a better fit for whole-product evaluation because:
 
 - unhelpful reviews contribute less
-- a larger review set gets a stronger final confidence gate
+- deceptive reviews contribute less
+- a larger set only gets a stronger final confidence gate when the reviews are
+  informative
 - the final score becomes more confident when multiple informative reviews agree
 
 Example:

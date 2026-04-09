@@ -429,6 +429,19 @@ def score_ebay_candidate_value(
             base_input,
             resolved_ewom_result,
         )
+    else:
+        base_input = BayesianValueInput(
+            trust_probability=0.0,
+            ewom_score_0_to_100=0.0,
+            ewom_magnitude_0_to_100=base_input.ewom_magnitude_0_to_100,
+            average_rating=base_input.average_rating,
+            rating_count=base_input.rating_count,
+            verified_purchase_rate=base_input.verified_purchase_rate,
+            price=base_input.price,
+            peer_price=base_input.peer_price,
+            warranty_months=base_input.warranty_months,
+            return_window_days=base_input.return_window_days,
+        )
 
     bayesian_result = score_good_value_probability(
         base_input,

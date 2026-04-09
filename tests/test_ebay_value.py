@@ -118,6 +118,25 @@ class EbayValueBridgeTests(unittest.TestCase):
         self.assertEqual(result["bayesian_result"]["resolved_input"]["price"], 79.0)
         self.assertFalse(result["pricing"]["include_shipping_in_total"])
 
+    def test_score_ebay_candidate_value_defaults_missing_agent_outputs_to_zero(self) -> None:
+        candidate = Candidate(
+            source_url="https://www.ebay.com.sg/itm/123",
+            page_type="listing",
+            title="Wireless Earbuds",
+            price={"value": "79.0", "currency": "SGD"},
+            product_rating_count=320,
+            product_average_rating=4.5,
+            seller_feedback_texts=[],
+        )
+
+        result = score_ebay_candidate_value(
+            candidate,
+            peer_price=99.0,
+        )
+
+        self.assertEqual(result["bayesian_result"]["resolved_input"]["trust_probability"], 0.0)
+        self.assertEqual(result["bayesian_result"]["resolved_input"]["ewom_score_0_to_100"], 0.0)
+
     def test_score_ebay_candidate_value_can_prefer_converted_usd_prices(self) -> None:
         candidate = Candidate(
             source_url="https://www.ebay.com.sg/itm/123",

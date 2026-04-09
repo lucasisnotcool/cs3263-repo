@@ -90,12 +90,16 @@ def extract_ewom_bayesian_signals(ewom_payload: Mapping[str, Any]) -> dict[str, 
         return {
             "source_type": "review_set",
             "review_count": _to_int(ewom_payload.get("review_count")),
-            "trust_probability": _resolve_review_set_trust_probability(
-                ewom_payload=ewom_payload,
-                aggregate=aggregate,
+            "trust_probability": _to_float_with_default(
+                _resolve_review_set_trust_probability(
+                    ewom_payload=ewom_payload,
+                    aggregate=aggregate,
+                ),
+                default=0.0,
             ),
-            "ewom_score_0_to_100": _to_float(
-                aggregate.get("final_ewom_score_0_to_100")
+            "ewom_score_0_to_100": _to_float_with_default(
+                aggregate.get("final_ewom_score_0_to_100"),
+                default=0.0,
             ),
             "ewom_magnitude_0_to_100": _to_float(
                 aggregate.get("final_ewom_magnitude_0_to_100")
@@ -107,8 +111,14 @@ def extract_ewom_bayesian_signals(ewom_payload: Mapping[str, Any]) -> dict[str, 
         return {
             "source_type": "single_review",
             "review_count": 1,
-            "trust_probability": _resolve_single_review_trust_probability(ewom_payload),
-            "ewom_score_0_to_100": _to_float(fusion.get("ewom_score_0_to_100")),
+            "trust_probability": _to_float_with_default(
+                _resolve_single_review_trust_probability(ewom_payload),
+                default=0.0,
+            ),
+            "ewom_score_0_to_100": _to_float_with_default(
+                fusion.get("ewom_score_0_to_100"),
+                default=0.0,
+            ),
             "ewom_magnitude_0_to_100": _to_float(
                 fusion.get("ewom_magnitude_0_to_100")
             ),
@@ -615,6 +625,13 @@ def _to_float(value: Any) -> float | None:
         return None
     if math.isnan(numeric) or math.isinf(numeric):
         return None
+    return numeric
+
+
+def _to_float_with_default(value: Any, *, default: float) -> float:
+    numeric = _to_float(value)
+    if numeric is None:
+        return float(default)
     return numeric
 
 

@@ -42,6 +42,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-df", type=int, default=2)
     parser.add_argument("--word-max-features", type=int, default=40_000)
     parser.add_argument("--char-max-features", type=int, default=30_000)
+    parser.add_argument(
+        "--allowed-listing-kinds",
+        type=str,
+        default=None,
+        help=(
+            "Optional comma-separated listing_kind allowlist for training, for example "
+            "\"device\" or \"device,other\"."
+        ),
+    )
+    parser.add_argument(
+        "--filtered-catalog-output",
+        type=Path,
+        default=None,
+        help=(
+            "Optional JSONL output path for the filtered priced training catalog "
+            "that will be used to fit the model."
+        ),
+    )
     parser.add_argument("--log-level", type=str, default="INFO")
     return parser
 
@@ -64,6 +82,8 @@ def main() -> None:
         output_prefix=args.output_prefix,
         config=config,
         max_rows=args.max_rows,
+        allowed_listing_kinds=args.allowed_listing_kinds,
+        filtered_catalog_output_path=args.filtered_catalog_output,
     )
     print(json.dumps(result, indent=2))
 

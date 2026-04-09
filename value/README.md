@@ -870,6 +870,12 @@ python -m value.train_worth_buying_model \
   --output-prefix value/artifacts/amazon_worth_buying_quick \
   --max-rows 10000
 
+python -m value.train_worth_buying_model \
+  --train-path data/value/electronics_split/electronics_products_train.jsonl \
+  --output-prefix value/artifacts/amazon_worth_buying_devices_quick \
+  --max-rows 100000 \
+  --allowed-listing-kinds device
+
 python -m value.run_combined_value_model \
   --model-path value/artifacts/amazon_worth_buying_quick.joblib \
   --input-path data/value/electronics_split/electronics_products_val.jsonl \

@@ -249,6 +249,216 @@ class WorthBuyingPipelineTests(unittest.TestCase):
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
+    def test_train_pipeline_can_filter_to_allowed_listing_kinds(self) -> None:
+        tmpdir = Path("data") / "test_artifacts" / f"worth_buying_filter_{uuid.uuid4().hex}"
+        tmpdir.mkdir(parents=True, exist_ok=True)
+        try:
+            train_path = tmpdir / "train.jsonl"
+            output_prefix = tmpdir / "artifacts" / "worth_buying"
+
+            train_rows = [
+                {
+                    "parent_asin": "D1",
+                    "title": "Wireless Earbuds Pro",
+                    "store": "Acme",
+                    "main_category": "Electronics",
+                    "listing_kind": "device",
+                    "product_document": "wireless earbuds bluetooth noise canceling usb c",
+                    "price": 79.0,
+                    "average_rating": 4.6,
+                    "rating_number": 420,
+                    "review_count": 380,
+                    "verified_purchase_rate": 0.91,
+                    "helpful_vote_total": 120,
+                    "helpful_vote_avg": 0.32,
+                    "avg_review_rating": 4.5,
+                },
+                {
+                    "parent_asin": "C1",
+                    "title": "AirPods Pro Charging Cable",
+                    "store": "CableCo",
+                    "main_category": "Cell Phones & Accessories",
+                    "listing_kind": "cable",
+                    "product_document": "airpods pro charging cable lightning usb c cable",
+                    "price": 12.0,
+                    "average_rating": 4.8,
+                    "rating_number": 800,
+                    "review_count": 760,
+                    "verified_purchase_rate": 0.95,
+                    "helpful_vote_total": 80,
+                    "helpful_vote_avg": 0.11,
+                    "avg_review_rating": 4.7,
+                },
+            ]
+            _write_jsonl(train_path, train_rows)
+
+            metadata = train_worth_buying_pipeline(
+                train_path=train_path,
+                output_prefix=output_prefix,
+                config=WorthBuyingConfig(min_df=1, top_k_neighbors=2, min_neighbors=1),
+                allowed_listing_kinds=["device"],
+            )
+            bundle = load_model(metadata["model_path"])
+
+            self.assertEqual(metadata["allowed_listing_kinds"], ["device"])
+            self.assertEqual(metadata["rows_fitted"], 1)
+            self.assertEqual(metadata["listing_kind_counts"], {"device": 1})
+            self.assertEqual(bundle["allowed_listing_kinds"], ["device"])
+
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_train_pipeline_can_export_filtered_catalog(self) -> None:
+        tmpdir = Path("data") / "test_artifacts" / f"worth_buying_export_{uuid.uuid4().hex}"
+        tmpdir.mkdir(parents=True, exist_ok=True)
+        try:
+            train_path = tmpdir / "train.jsonl"
+            output_prefix = tmpdir / "artifacts" / "worth_buying"
+            filtered_output = tmpdir / "filtered" / "devices_only.jsonl"
+
+            train_rows = [
+                {
+                    "parent_asin": "D1",
+                    "title": "Wireless Earbuds Pro",
+                    "store": "Acme",
+                    "main_category": "Electronics",
+                    "listing_kind": "device",
+                    "product_document": "wireless earbuds bluetooth noise canceling usb c",
+                    "price": 79.0,
+                    "average_rating": 4.6,
+                    "rating_number": 420,
+                    "review_count": 380,
+                    "verified_purchase_rate": 0.91,
+                    "helpful_vote_total": 120,
+                    "helpful_vote_avg": 0.32,
+                    "avg_review_rating": 4.5,
+                },
+                {
+                    "parent_asin": "C1",
+                    "title": "AirPods Pro Charging Cable",
+                    "store": "CableCo",
+                    "main_category": "Cell Phones & Accessories",
+                    "listing_kind": "cable",
+                    "product_document": "airpods pro charging cable lightning usb c cable",
+                    "price": 12.0,
+                    "average_rating": 4.8,
+                    "rating_number": 800,
+                    "review_count": 760,
+                    "verified_purchase_rate": 0.95,
+                    "helpful_vote_total": 80,
+                    "helpful_vote_avg": 0.11,
+                    "avg_review_rating": 4.7,
+                },
+            ]
+            _write_jsonl(train_path, train_rows)
+
+            metadata = train_worth_buying_pipeline(
+                train_path=train_path,
+                output_prefix=output_prefix,
+                config=WorthBuyingConfig(min_df=1, top_k_neighbors=2, min_neighbors=1),
+                allowed_listing_kinds=["device"],
+                filtered_catalog_output_path=filtered_output,
+            )
+
+            self.assertEqual(str(filtered_output.resolve()), metadata["filtered_catalog_output_path"])
+            exported_rows = [
+                json.loads(line)
+                for line in filtered_output.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(exported_rows), 1)
+            self.assertEqual(exported_rows[0]["listing_kind"], "device")
+            self.assertEqual(exported_rows[0]["parent_asin"], "D1")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_device_only_model_returns_no_neighbors_for_accessory_query(self) -> None:
+        tmpdir = Path("data") / "test_artifacts" / f"worth_buying_devices_only_{uuid.uuid4().hex}"
+        tmpdir.mkdir(parents=True, exist_ok=True)
+        try:
+            train_path = tmpdir / "train.jsonl"
+            output_prefix = tmpdir / "artifacts" / "worth_buying"
+
+            train_rows = [
+                {
+                    "parent_asin": "D1",
+                    "title": "Apple AirPods Pro Wireless Earbuds",
+                    "store": "Apple",
+                    "main_category": "All Electronics",
+                    "listing_kind": "device",
+                    "product_document": "apple airpods pro wireless earbuds bluetooth noise canceling",
+                    "price": 189.0,
+                    "average_rating": 4.7,
+                    "rating_number": 1800,
+                    "review_count": 1600,
+                    "verified_purchase_rate": 0.96,
+                    "helpful_vote_total": 400,
+                    "helpful_vote_avg": 0.25,
+                    "avg_review_rating": 4.7,
+                },
+                {
+                    "parent_asin": "D2",
+                    "title": "Wireless Earbuds In Ear Noise Cancelling",
+                    "store": "Acme",
+                    "main_category": "All Electronics",
+                    "listing_kind": "device",
+                    "product_document": "wireless earbuds in ear noise canceling bluetooth",
+                    "price": 79.0,
+                    "average_rating": 4.3,
+                    "rating_number": 500,
+                    "review_count": 450,
+                    "verified_purchase_rate": 0.91,
+                    "helpful_vote_total": 80,
+                    "helpful_vote_avg": 0.18,
+                    "avg_review_rating": 4.2,
+                },
+            ]
+            _write_jsonl(train_path, train_rows)
+
+            metadata = train_worth_buying_pipeline(
+                train_path=train_path,
+                output_prefix=output_prefix,
+                config=WorthBuyingConfig(min_df=1, top_k_neighbors=2, min_neighbors=1),
+                allowed_listing_kinds=["device"],
+            )
+            bundle = load_model(metadata["model_path"])
+
+            diagnostics = inspect_worth_buying_catalog_neighbors(
+                pd.DataFrame(
+                    [
+                        {
+                            "parent_asin": "Q1",
+                            "title": "AirPods Pro Case with Keychain",
+                            "store": "",
+                            "main_category": "",
+                            "listing_kind": "case",
+                            "product_document": "airpods pro case with keychain silicone cover",
+                            "price": 12.0,
+                            "average_rating": None,
+                            "rating_number": None,
+                            "review_count": 0,
+                            "verified_purchase_rate": None,
+                            "helpful_vote_total": 0.0,
+                            "helpful_vote_avg": 0.0,
+                            "avg_review_rating": None,
+                            "trust_probability": None,
+                            "ewom_score_0_to_100": None,
+                            "ewom_magnitude_0_to_100": None,
+                        }
+                    ]
+                ),
+                model_bundle=bundle,
+                config_overrides={"top_k_neighbors": 2, "min_similarity": 0.02},
+            )
+
+            self.assertEqual(diagnostics[0]["listing_kind"], "case")
+            self.assertEqual(diagnostics[0]["retrieval_listing_kind"], "")
+            self.assertEqual(diagnostics[0]["neighbor_count"], 0)
+            self.assertEqual(diagnostics[0]["neighbors"], [])
+            self.assertIsNone(diagnostics[0]["peer_price"])
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

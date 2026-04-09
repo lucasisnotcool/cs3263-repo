@@ -16,6 +16,7 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import normalize
 
 from .listing_kind import (
+    LISTING_KIND_VALUES,
     LISTING_KIND_OTHER,
     infer_listing_kind_from_row,
     normalize_listing_kind,
@@ -77,14 +78,28 @@ def train_worth_buying_pipeline(
     output_prefix: str | Path,
     config: WorthBuyingConfig | None = None,
     max_rows: int | None = None,
+    allowed_listing_kinds: list[str] | tuple[str, ...] | None = None,
+    filtered_catalog_output_path: str | Path | None = None,
 ) -> dict[str, Any]:
     resolved_config = config or WorthBuyingConfig()
     source_catalog = load_prepared_catalog(train_path, max_rows=max_rows).reset_index(drop=True)
     if source_catalog.empty:
         raise ValueError("Training split is empty after normalization.")
+    resolved_allowed_listing_kinds = _resolve_allowed_listing_kinds(allowed_listing_kinds)
     train_catalog = source_catalog.loc[source_catalog["price"].notna()].copy().reset_index(drop=True)
+    if resolved_allowed_listing_kinds is not None:
+        train_catalog = train_catalog.loc[
+            train_catalog["listing_kind"].isin(resolved_allowed_listing_kinds)
+        ].reset_index(drop=True)
     if train_catalog.empty:
         raise ValueError("Training split does not contain any priced products to fit neighbors on.")
+    resolved_filtered_catalog_output_path: Path | None = None
+    if filtered_catalog_output_path is not None:
+        resolved_filtered_catalog_output_path = Path(filtered_catalog_output_path).expanduser().resolve()
+        _write_jsonl_records(
+            resolved_filtered_catalog_output_path,
+            train_catalog.to_dict(orient="records"),
+        )
 
     feature_bundle = _fit_product_vectorizers(train_catalog, resolved_config)
     feature_matrix = feature_bundle["feature_matrix"]
@@ -115,6 +130,7 @@ def train_worth_buying_pipeline(
         "train_catalog": train_catalog,
         "kind_models": kind_models,
         "global_rating_mean": global_rating_mean,
+        "allowed_listing_kinds": resolved_allowed_listing_kinds,
     }
 
     resolved_output_prefix = Path(output_prefix).expanduser().resolve()
@@ -129,6 +145,16 @@ def train_worth_buying_pipeline(
         "rows_loaded": int(len(source_catalog)),
         "rows_fitted": int(len(train_catalog)),
         "priced_rows": int(train_catalog["price"].notna().sum()),
+        "filtered_catalog_output_path": (
+            str(resolved_filtered_catalog_output_path)
+            if resolved_filtered_catalog_output_path is not None
+            else None
+        ),
+        "allowed_listing_kinds": (
+            list(resolved_allowed_listing_kinds)
+            if resolved_allowed_listing_kinds is not None
+            else None
+        ),
         "rows_with_reviews": int((source_catalog["review_count"] > 0).sum()),
         "listing_kind_counts": {
             key: int(value)
@@ -556,14 +582,28 @@ def _collect_neighbor_candidates(
 ) -> list[dict[str, Any]]:
     kind_models = bundle.get("kind_models")
     kind_models = kind_models if isinstance(kind_models, Mapping) else {}
+    allowed_listing_kinds = _resolve_allowed_listing_kinds(bundle.get("allowed_listing_kinds"))
     grouped_indices: dict[str, list[int]] = {}
     for row_index, (_, product) in enumerate(query_catalog.iterrows()):
         listing_kind = normalize_listing_kind(product.get("listing_kind"))
+        if allowed_listing_kinds is not None and listing_kind not in allowed_listing_kinds:
+            grouped_indices.setdefault("__disallowed__", []).append(row_index)
+            continue
         bundle_key = listing_kind if listing_kind in kind_models else "__all__"
         grouped_indices.setdefault(bundle_key, []).append(row_index)
 
     search_results: list[dict[str, Any] | None] = [None] * len(query_catalog)
     for bundle_key, row_indices in grouped_indices.items():
+        if bundle_key == "__disallowed__":
+            empty_catalog = pd.DataFrame(columns=query_catalog.columns)
+            for row_index in row_indices:
+                search_results[row_index] = {
+                    "train_catalog": empty_catalog,
+                    "distances": np.array([], dtype=float),
+                    "indices": np.array([], dtype=int),
+                    "listing_kind": "",
+                }
+            continue
         search_bundle = (
             kind_models[bundle_key]
             if bundle_key != "__all__"
@@ -775,6 +815,32 @@ def _to_optional_float(value: Any) -> float | None:
     return numeric
 
 
+def _resolve_allowed_listing_kinds(
+    value: Any,
+) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        raw_values = [part.strip() for part in value.split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        raw_values = [str(item or "").strip() for item in value]
+    else:
+        raise TypeError(
+            "allowed_listing_kinds must be a string, list, tuple, set, or None."
+        )
+
+    resolved: list[str] = []
+    for raw_value in raw_values:
+        if not raw_value:
+            continue
+        normalized = normalize_listing_kind(raw_value)
+        if normalized not in LISTING_KIND_VALUES or normalized == LISTING_KIND_OTHER:
+            continue
+        if normalized not in resolved:
+            resolved.append(normalized)
+    return resolved or None
+
+
 def _resolve_runtime_config(
     bundle: Mapping[str, Any],
     config_overrides: Mapping[str, Any] | None = None,
@@ -799,3 +865,11 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
         handle.write("\n")
+
+
+def _write_jsonl_records(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            json.dump(row, handle, ensure_ascii=False)
+            handle.write("\n")

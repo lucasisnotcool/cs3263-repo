@@ -56,6 +56,39 @@ class BayesianValueModelTests(unittest.TestCase):
         self.assertEqual(evidence["RelativePriceBucket"], "cheaper")
         self.assertAlmostEqual(derived["price_gap_vs_peer"], 0.20)
 
+    def test_build_value_evidence_uses_finer_price_bins_for_large_gaps(self) -> None:
+        evidence_a, _ = build_value_evidence(
+            BayesianValueInput(price=109.0, peer_price=207.10119974788003)
+        )
+        evidence_b, _ = build_value_evidence(
+            BayesianValueInput(price=153.58, peer_price=204.93384007512537)
+        )
+
+        self.assertEqual(evidence_a["RelativePriceBucket"], "extreme_cheaper")
+        self.assertEqual(evidence_b["RelativePriceBucket"], "much_cheaper")
+
+    def test_build_value_evidence_uses_finer_trust_and_polarity_bins(self) -> None:
+        evidence, _ = build_value_evidence(
+            BayesianValueInput(
+                trust_probability=0.86,
+                ewom_score_0_to_100=74.0,
+            )
+        )
+
+        self.assertEqual(evidence["TrustSignal"], "very_high")
+        self.assertEqual(evidence["ReviewPolarity"], "positive")
+
+    def test_build_value_evidence_can_apply_neutral_relative_price_fallback(self) -> None:
+        evidence, derived = build_value_evidence(
+            BayesianValueInput(price=109.0, peer_price=None),
+            default_relative_price_bucket="fair",
+        )
+
+        self.assertEqual(evidence["RelativePriceBucket"], "fair")
+        self.assertIsNone(derived["price_gap_vs_peer"])
+        self.assertEqual(derived["relative_price_bucket"], "fair")
+        self.assertEqual(derived["relative_price_bucket_source"], "default")
+
     def test_missing_optional_signals_still_produces_probability(self) -> None:
         result = score_good_value_probability(
             BayesianValueInput(

@@ -100,6 +100,18 @@ class ElectronicsSplitBuilderTests(unittest.TestCase):
             self.assertTrue((output_dir / "electronics_products_train.jsonl").exists())
             self.assertTrue((output_dir / "electronics_products_val.jsonl").exists())
             self.assertTrue((output_dir / "electronics_products_test.jsonl").exists())
+
+            written_rows: list[dict] = []
+            for split_name in ("train", "val", "test"):
+                split_path = output_dir / f"electronics_products_{split_name}.jsonl"
+                with split_path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        if line.strip():
+                            written_rows.append(json.loads(line))
+
+            rows_by_asin = {row["parent_asin"]: row for row in written_rows}
+            self.assertEqual(rows_by_asin["A1"]["listing_kind"], "device")
+            self.assertEqual(rows_by_asin["A2"]["listing_kind"], "cable")
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 

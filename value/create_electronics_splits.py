@@ -14,6 +14,8 @@ from typing import Any
 if __package__ in {None, ""}:
     sys.path.append(str(Path(__file__).resolve().parents[1]))
 
+from value.listing_kind import infer_listing_kind_from_parts
+
 
 LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -354,6 +356,14 @@ def _build_product_record(
         description=description,
         details_text=details_text,
     )
+    listing_kind = infer_listing_kind_from_parts(
+        title=title,
+        main_category=main_category,
+        categories=categories,
+        features=features,
+        description=description,
+        details_text=details_text,
+    )
 
     return {
         "parent_asin": parent_asin,
@@ -361,6 +371,7 @@ def _build_product_record(
         "store": store,
         "main_category": main_category,
         "categories": categories,
+        "listing_kind": listing_kind,
         "price": price,
         "average_rating": average_rating,
         "rating_number": rating_number,

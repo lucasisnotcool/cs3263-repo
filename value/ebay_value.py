@@ -16,42 +16,280 @@ from .bayesian_value import (
     fuse_ewom_result_into_bayesian_input,
     score_good_value_probability,
 )
-from .worth_buying import (
-    inspect_worth_buying_catalog_neighbors,
-    score_worth_buying_catalog,
+from .listing_kind import infer_listing_kind_from_parts
+from .worth_buying import inspect_worth_buying_catalog_neighbors
+
+
+PREFERRED_BRAND_KEYS = (
+    "brand",
+    "manufacturer",
+    "brand name",
+    "make",
 )
+
+GENERIC_BRAND_VALUES = {
+    "does not apply",
+    "generic",
+    "unbranded",
+    "unknown",
+}
+
+ACCESSORY_TERMS = {
+    "adapter",
+    "band",
+    "cable",
+    "case",
+    "charger",
+    "cord",
+    "cover",
+    "dock",
+    "earpads",
+    "hook",
+    "holder",
+    "mount",
+    "protector",
+    "replacement",
+    "skin",
+    "sleeve",
+    "stand",
+    "strap",
+    "tips",
+}
+
+ACCESSORY_CUE_PHRASES = (
+    "anti lost",
+    "adapter for",
+    "case for",
+    "cable for",
+    "charger for",
+    "compatible with",
+    "cover for",
+    "protective case",
+    "protector for",
+    "replacement for",
+    "skin for",
+)
+
+ACCESSORY_CONTEXT_TERMS = {
+    "anti",
+    "carabiner",
+    "cover",
+    "cute",
+    "dustproof",
+    "earhook",
+    "fashion",
+    "hard",
+    "hook",
+    "keychain",
+    "protective",
+    "rugged",
+    "shockproof",
+    "silicone",
+    "soft",
+    "tpu",
+}
+
+DEVICE_FAMILY_TERMS = {
+    "airpods",
+    "camera",
+    "console",
+    "earbuds",
+    "galaxy",
+    "headphones",
+    "iphone",
+    "ipad",
+    "kindle",
+    "laptop",
+    "macbook",
+    "monitor",
+    "phone",
+    "pixel",
+    "playstation",
+    "speaker",
+    "switch",
+    "tablet",
+    "watch",
+    "xbox",
+}
+
+IMPLAUSIBLY_LOW_PEER_PRICE_RATIO = 0.18
+MIN_PEER_NEIGHBOR_COUNT = 3
+
+PRIMARY_PRODUCT_TYPE_TERMS = {
+    "camera",
+    "console",
+    "earbud",
+    "earbuds",
+    "headphone",
+    "headphones",
+    "headset",
+    "in ear",
+    "laptop",
+    "monitor",
+    "phone",
+    "smartphone",
+    "speaker",
+    "tablet",
+    "watch",
+}
+
+RETRIEVAL_MODEL_KEYS = (
+    "model",
+    "model name",
+    "product line",
+    "series",
+)
+
+RETRIEVAL_TYPE_KEYS = (
+    "type",
+    "product type",
+)
+
+TITLE_NOISE_TERMS = (
+    "nib",
+    "bnib",
+    "brand new",
+    "new in box",
+    "open box",
+    "sealed",
+)
+
+REMOVABLE_WITH_TERMS = (
+    "accessories",
+    "bundle",
+    "cable",
+    "case",
+    "charger",
+    "charging case",
+    "cover",
+    "ear tips",
+    "keychain",
+    "lanyard",
+    "magsafe",
+    "skin",
+)
+
+DEFAULT_RETRIEVAL_CANDIDATE_POOL_SIZE = 500
+DEFAULT_RERANKED_NEIGHBOR_COUNT = 5
+DEFAULT_RETRIEVAL_MIN_SIMILARITY = 0.02
+MIN_RERANK_MATCH_SCORE = 0.24
+RETRIEVAL_STOPWORDS = {
+    "apple",
+    "bluetooth",
+    "earbud",
+    "earbuds",
+    "generation",
+    "in",
+    "the",
+}
+CORE_IDENTITY_STOPWORDS = {
+    "1st",
+    "2nd",
+    "3rd",
+    "4th",
+    "5th",
+    "6th",
+    "7th",
+    "8th",
+    "9th",
+    "10th",
+    "bluetooth",
+    "generation",
+    "gen",
+    "new",
+    "series",
+    "true",
+    "wireless",
+}
+IMPORTANT_VARIANT_TOKENS = {"max", "mini", "plus", "pro", "ultra"}
+PRODUCT_KIND_ALIASES: dict[str, set[str]] = {
+    "camera": {"camera", "camcorder", "dslr", "mirrorless", "webcam"},
+    "console": {"console", "playstation", "switch", "xbox"},
+    "earbud": {
+        "airpod",
+        "airpods",
+        "earbud",
+        "earbuds",
+        "earphone",
+        "earphones",
+        "earset",
+        "headset",
+        "headsets",
+        "iem",
+    },
+    "headphone": {"headphone", "headphones"},
+    "laptop": {"chromebook", "laptop", "macbook", "notebook"},
+    "monitor": {"display", "monitor"},
+    "pen": {"pencil", "pen", "stylus"},
+    "phone": {"galaxy", "iphone", "phone", "pixel", "smartphone"},
+    "speaker": {"soundbar", "speaker", "speakers"},
+    "tablet": {"ipad", "tablet"},
+    "watch": {"applewatch", "smartwatch", "watch"},
+    "charger": {"adapter", "charger", "charging", "dock", "powerbank", "usb"},
+}
+AUDIO_PRODUCT_KINDS = {"earbud", "headphone"}
+PRIMARY_PRODUCT_TYPE_TOKENS = {
+    token
+    for term in PRIMARY_PRODUCT_TYPE_TERMS
+    for token in term.split()
+}
 
 
 def build_bayesian_input_from_candidate(
     candidate: Candidate | Mapping[str, Any],
     *,
     peer_price: float | None = None,
+    include_shipping_in_total: bool = True,
+    prefer_converted_usd: bool = False,
 ) -> BayesianValueInput:
     resolved_candidate = _coerce_candidate(candidate)
     return BayesianValueInput(
         average_rating=_to_optional_float(resolved_candidate.product_average_rating),
         rating_count=_to_optional_float(resolved_candidate.product_rating_count),
-        price=resolve_candidate_total_price(resolved_candidate),
+        price=resolve_candidate_total_price(
+            resolved_candidate,
+            include_shipping_in_total=include_shipping_in_total,
+            prefer_converted_usd=prefer_converted_usd,
+        ),
         peer_price=_to_optional_float(peer_price),
         warranty_months=_extract_warranty_months(resolved_candidate.item_specifics),
         return_window_days=_extract_return_window_days(resolved_candidate.returns),
     )
 
 
-def build_worth_buying_query_row(candidate: Candidate | Mapping[str, Any]) -> dict[str, Any]:
+def build_worth_buying_query_row(
+    candidate: Candidate | Mapping[str, Any],
+    *,
+    include_shipping_in_total: bool = True,
+    prefer_converted_usd: bool = False,
+) -> dict[str, Any]:
     resolved_candidate = _coerce_candidate(candidate)
     average_rating = _to_optional_float(resolved_candidate.product_average_rating)
     rating_count = _to_optional_float(resolved_candidate.product_rating_count)
     review_count = int(rating_count or 0.0)
-    title = str(resolved_candidate.title or "")
+    title = _build_candidate_retrieval_title(resolved_candidate)
+    brand = _extract_candidate_brand(resolved_candidate)
+    listing_kind = infer_listing_kind_from_parts(
+        title=title,
+        main_category="",
+        categories=[],
+        features=[],
+        description=[],
+        details_text=_flatten_mapping_text(resolved_candidate.item_specifics),
+    )
 
     return {
         "parent_asin": _resolve_candidate_identity(resolved_candidate),
         "title": title,
-        "store": str(resolved_candidate.seller_id or ""),
+        "store": brand or "",
         "main_category": "",
+        "listing_kind": listing_kind,
         "product_document": _build_candidate_product_document(resolved_candidate),
-        "price": resolve_candidate_total_price(resolved_candidate),
+        "price": resolve_candidate_total_price(
+            resolved_candidate,
+            include_shipping_in_total=include_shipping_in_total,
+            prefer_converted_usd=prefer_converted_usd,
+        ),
         "average_rating": average_rating,
         "rating_number": rating_count,
         "review_count": review_count,
@@ -71,17 +309,45 @@ def infer_candidate_market_context(
     model_path: str | Path,
     top_k_neighbors: int | None = None,
     min_similarity: float | None = None,
+    include_shipping_in_total: bool = True,
+    prefer_converted_usd: bool = False,
+    retrieval_candidate_pool_size: int | None = DEFAULT_RETRIEVAL_CANDIDATE_POOL_SIZE,
+    min_peer_price_ratio: float = IMPLAUSIBLY_LOW_PEER_PRICE_RATIO,
+    min_peer_neighbor_count: int = MIN_PEER_NEIGHBOR_COUNT,
 ) -> dict[str, Any]:
-    query_row = build_worth_buying_query_row(candidate)
-    scored = score_worth_buying_catalog(
+    resolved_candidate = _coerce_candidate(candidate)
+    reranked_top_n = _resolve_reranked_top_n(top_k_neighbors)
+    candidate_pool_size = _resolve_candidate_pool_size(
+        retrieval_candidate_pool_size,
+        reranked_top_n=reranked_top_n,
+    )
+    query_row = build_worth_buying_query_row(
+        resolved_candidate,
+        include_shipping_in_total=include_shipping_in_total,
+        prefer_converted_usd=prefer_converted_usd,
+    )
+    diagnostics = inspect_worth_buying_catalog_neighbors(
         pd.DataFrame([query_row]),
         model_path=model_path,
         config_overrides={
-            "top_k_neighbors": top_k_neighbors,
-            "min_similarity": min_similarity,
+            "top_k_neighbors": candidate_pool_size,
+            "min_similarity": (
+                min_similarity
+                if min_similarity is not None
+                else DEFAULT_RETRIEVAL_MIN_SIMILARITY
+            ),
         },
+    )[0]
+    return _to_builtin(
+        _refine_candidate_market_context(
+            resolved_candidate,
+            diagnostics,
+            reranked_top_n=reranked_top_n,
+            candidate_pool_size=candidate_pool_size,
+            min_peer_price_ratio=min_peer_price_ratio,
+            min_peer_neighbor_count=min_peer_neighbor_count,
+        )
     )
-    return _to_builtin(scored.iloc[0].to_dict())
 
 
 def score_ebay_candidate_value(
@@ -92,11 +358,18 @@ def score_ebay_candidate_value(
     top_k_neighbors: int | None = None,
     ewom_result: Mapping[str, Any] | None = None,
     ewom_model_paths: EWOMModelPaths | Mapping[str, Any] | None = None,
+    include_shipping_in_total: bool = True,
+    prefer_converted_usd: bool = False,
+    retrieval_candidate_pool_size: int | None = DEFAULT_RETRIEVAL_CANDIDATE_POOL_SIZE,
+    min_peer_price_ratio: float = IMPLAUSIBLY_LOW_PEER_PRICE_RATIO,
+    min_peer_neighbor_count: int = MIN_PEER_NEIGHBOR_COUNT,
 ) -> dict[str, Any]:
     resolved_candidate = _coerce_candidate(candidate)
     base_input = build_bayesian_input_from_candidate(
         resolved_candidate,
         peer_price=peer_price,
+        include_shipping_in_total=include_shipping_in_total,
+        prefer_converted_usd=prefer_converted_usd,
     )
 
     market_context: dict[str, Any] | None = None
@@ -105,12 +378,19 @@ def score_ebay_candidate_value(
             resolved_candidate,
             model_path=worth_buying_model_path,
             top_k_neighbors=top_k_neighbors,
+            include_shipping_in_total=include_shipping_in_total,
+            prefer_converted_usd=prefer_converted_usd,
+            retrieval_candidate_pool_size=retrieval_candidate_pool_size,
+            min_peer_price_ratio=min_peer_price_ratio,
+            min_peer_neighbor_count=min_peer_neighbor_count,
         )
         inferred_peer_price = _to_optional_float(market_context.get("peer_price"))
         if inferred_peer_price is not None:
             base_input = build_bayesian_input_from_candidate(
                 resolved_candidate,
                 peer_price=inferred_peer_price,
+                include_shipping_in_total=include_shipping_in_total,
+                prefer_converted_usd=prefer_converted_usd,
             )
 
     resolved_ewom_result: dict[str, Any] | None = None
@@ -139,6 +419,14 @@ def score_ebay_candidate_value(
         "market_context": market_context,
         "ewom_result": resolved_ewom_result,
         "bayesian_result": _to_builtin(bayesian_result),
+        "pricing": {
+            "include_shipping_in_total": bool(include_shipping_in_total),
+            "prefer_converted_usd": bool(prefer_converted_usd),
+            "total_price_currency": resolve_candidate_total_price_currency(
+                resolved_candidate,
+                prefer_converted_usd=prefer_converted_usd,
+            ),
+        },
     }
 
 
@@ -149,6 +437,11 @@ def sweep_candidate_market_context_k(
     k_values: list[int] | tuple[int, ...],
     ewom_result: Mapping[str, Any] | None = None,
     ewom_model_paths: EWOMModelPaths | Mapping[str, Any] | None = None,
+    include_shipping_in_total: bool = True,
+    prefer_converted_usd: bool = False,
+    retrieval_candidate_pool_size: int | None = DEFAULT_RETRIEVAL_CANDIDATE_POOL_SIZE,
+    min_peer_price_ratio: float = IMPLAUSIBLY_LOW_PEER_PRICE_RATIO,
+    min_peer_neighbor_count: int = MIN_PEER_NEIGHBOR_COUNT,
 ) -> dict[str, Any]:
     resolved_candidate = _coerce_candidate(candidate)
     normalized_k_values = _normalize_k_values(k_values)
@@ -163,13 +456,17 @@ def sweep_candidate_market_context_k(
         )
 
     sweep_rows: list[dict[str, Any]] = []
-    query_row = build_worth_buying_query_row(resolved_candidate)
     for k in normalized_k_values:
-        diagnostics = inspect_worth_buying_catalog_neighbors(
-            pd.DataFrame([query_row]),
+        diagnostics = infer_candidate_market_context(
+            resolved_candidate,
             model_path=model_path,
-            config_overrides={"top_k_neighbors": int(k)},
-        )[0]
+            top_k_neighbors=int(k),
+            include_shipping_in_total=include_shipping_in_total,
+            prefer_converted_usd=prefer_converted_usd,
+            retrieval_candidate_pool_size=retrieval_candidate_pool_size,
+            min_peer_price_ratio=min_peer_price_ratio,
+            min_peer_neighbor_count=min_peer_neighbor_count,
+        )
         peer_price = _to_optional_float(diagnostics.get("peer_price"))
         good_value_probability = None
         prediction = None
@@ -178,6 +475,11 @@ def sweep_candidate_market_context_k(
                 resolved_candidate,
                 peer_price=peer_price,
                 ewom_result=resolved_ewom_result,
+                include_shipping_in_total=include_shipping_in_total,
+                prefer_converted_usd=prefer_converted_usd,
+                retrieval_candidate_pool_size=retrieval_candidate_pool_size,
+                min_peer_price_ratio=min_peer_price_ratio,
+                min_peer_neighbor_count=min_peer_neighbor_count,
             )["bayesian_result"]
             good_value_probability = _to_optional_float(
                 bayesian_result.get("good_value_probability")
@@ -192,9 +494,11 @@ def sweep_candidate_market_context_k(
                 "k": int(k),
                 "peer_price": peer_price,
                 "neighbor_count": int(diagnostics.get("neighbor_count", 0) or 0),
+                "raw_neighbor_count": int(diagnostics.get("raw_neighbor_count", 0) or 0),
                 "average_neighbor_similarity": _to_optional_float(
                     diagnostics.get("average_neighbor_similarity")
                 ),
+                "retrieval_status": diagnostics.get("retrieval_status"),
                 "neighbor_prices": [
                     _to_optional_float(neighbor.get("price"))
                     for neighbor in diagnostics.get("neighbors", [])
@@ -209,6 +513,14 @@ def sweep_candidate_market_context_k(
         "candidate": resolved_candidate.to_output_dict(),
         "ewom_result": resolved_ewom_result,
         "k_sweep": sweep_rows,
+        "pricing": {
+            "include_shipping_in_total": bool(include_shipping_in_total),
+            "prefer_converted_usd": bool(prefer_converted_usd),
+            "total_price_currency": resolve_candidate_total_price_currency(
+                resolved_candidate,
+                prefer_converted_usd=prefer_converted_usd,
+            ),
+        },
     }
 
 
@@ -255,7 +567,18 @@ def write_candidate_k_sweep_plot(
     if not isinstance(candidate, Mapping) or not isinstance(rows, list) or not rows:
         raise ValueError("result must contain a non-empty 'k_sweep' list.")
 
-    total_price = resolve_candidate_total_price(candidate)
+    pricing = result.get("pricing")
+    include_shipping_in_total = True
+    prefer_converted_usd = False
+    if isinstance(pricing, Mapping):
+        include_shipping_in_total = bool(pricing.get("include_shipping_in_total", True))
+        prefer_converted_usd = bool(pricing.get("prefer_converted_usd", False))
+
+    total_price = resolve_candidate_total_price(
+        candidate,
+        include_shipping_in_total=include_shipping_in_total,
+        prefer_converted_usd=prefer_converted_usd,
+    )
     plot_rows = [row for row in rows if isinstance(row, Mapping)]
     ks = [int(row.get("k")) for row in plot_rows]
     peer_prices = [_to_optional_float(row.get("peer_price")) for row in plot_rows]
@@ -385,6 +708,11 @@ def summarize_ebay_candidate_value_result(
         "source_url": candidate.get("source_url"),
         "title": candidate.get("title"),
         "total_price": resolved_input.get("price"),
+        "total_price_currency": (
+            result.get("pricing", {}).get("total_price_currency")
+            if isinstance(result.get("pricing"), Mapping)
+            else None
+        ),
         "peer_price": resolved_input.get("peer_price"),
         "price_gap_vs_peer": derived_metrics.get("price_gap_vs_peer"),
         "good_value_probability": probability,
@@ -395,19 +723,65 @@ def summarize_ebay_candidate_value_result(
         "trust_probability": resolved_input.get("trust_probability"),
         "ewom_score_0_to_100": resolved_input.get("ewom_score_0_to_100"),
         "seller_feedback_review_count": fused_agent_signals.get("review_count"),
+        "retrieval_status": (
+            result.get("market_context", {}).get("retrieval_status")
+            if isinstance(result.get("market_context"), Mapping)
+            else None
+        ),
+        "retrieved_neighbor_count": (
+            result.get("market_context", {}).get("neighbor_count")
+            if isinstance(result.get("market_context"), Mapping)
+            else None
+        ),
     }
 
 
-def resolve_candidate_total_price(candidate: Candidate | Mapping[str, Any]) -> float | None:
+def resolve_candidate_total_price(
+    candidate: Candidate | Mapping[str, Any],
+    *,
+    include_shipping_in_total: bool = True,
+    prefer_converted_usd: bool = False,
+) -> float | None:
     resolved_candidate = _coerce_candidate(candidate)
-    item_price = _extract_money_value(resolved_candidate.price)
-    shipping_cost = _extract_min_shipping_cost(resolved_candidate.shipping)
+    item_price = _extract_money_value(
+        resolved_candidate.price,
+        prefer_converted_usd=prefer_converted_usd,
+    )
 
     if item_price is None:
         return None
+    if not include_shipping_in_total:
+        return item_price
+
+    shipping_cost = _extract_min_shipping_cost(
+        resolved_candidate.shipping,
+        prefer_converted_usd=prefer_converted_usd,
+    )
     if shipping_cost is None:
         return item_price
     return item_price + shipping_cost
+
+
+def resolve_candidate_total_price_currency(
+    candidate: Candidate | Mapping[str, Any],
+    *,
+    prefer_converted_usd: bool = False,
+) -> str | None:
+    resolved_candidate = _coerce_candidate(candidate)
+    item_currency = _extract_money_currency(
+        resolved_candidate.price,
+        prefer_converted_usd=prefer_converted_usd,
+    )
+    if item_currency:
+        return item_currency
+    for option in resolved_candidate.shipping:
+        shipping_currency = _extract_money_currency(
+            option.get("shippingCost"),
+            prefer_converted_usd=prefer_converted_usd,
+        )
+        if shipping_currency:
+            return shipping_currency
+    return None
 
 
 def _coerce_candidate(candidate: Candidate | Mapping[str, Any]) -> Candidate:
@@ -456,12 +830,561 @@ def _resolve_candidate_identity(candidate: Candidate) -> str:
 
 
 def _build_candidate_product_document(candidate: Candidate) -> str:
+    retrieval_title = _build_candidate_retrieval_title(candidate)
+    raw_title = _clean_candidate_title_text(str(candidate.title or ""))
     parts = [
-        str(candidate.title or ""),
+        retrieval_title,
+        raw_title if raw_title != retrieval_title else "",
         str(candidate.condition or ""),
         _flatten_mapping_text(candidate.item_specifics),
     ]
     return " ".join(part for part in parts if part).strip()
+
+
+def _build_candidate_retrieval_title(candidate: Candidate) -> str:
+    brand = _extract_candidate_brand(candidate)
+    model = _extract_candidate_item_specific_text(candidate, RETRIEVAL_MODEL_KEYS)
+    type_text = _extract_candidate_item_specific_text(candidate, RETRIEVAL_TYPE_KEYS)
+    cleaned_title = _clean_candidate_title_text(str(candidate.title or ""))
+
+    parts: list[str] = []
+    if model:
+        normalized_model = _clean_candidate_title_text(model)
+        if normalized_model:
+            if brand and _normalize_matching_text(brand) not in _normalize_matching_text(normalized_model):
+                parts.append(brand)
+            parts.append(normalized_model)
+    elif cleaned_title:
+        if brand and _normalize_matching_text(brand) not in _normalize_matching_text(cleaned_title):
+            parts.append(brand)
+        parts.append(cleaned_title)
+
+    normalized_parts = {_normalize_matching_text(part) for part in parts if part}
+    normalized_type = _normalize_matching_text(type_text)
+    if type_text and normalized_type and normalized_type not in normalized_parts:
+        parts.append(_clean_candidate_title_text(type_text))
+
+    resolved = " ".join(part for part in parts if part).strip()
+    return resolved or cleaned_title or str(candidate.title or "").strip()
+
+
+def _refine_candidate_market_context(
+    candidate: Candidate,
+    diagnostics: Mapping[str, Any],
+    *,
+    reranked_top_n: int,
+    candidate_pool_size: int,
+    min_peer_price_ratio: float,
+    min_peer_neighbor_count: int,
+) -> dict[str, Any]:
+    raw_neighbors = [
+        dict(neighbor)
+        for neighbor in diagnostics.get("neighbors", [])
+        if isinstance(neighbor, Mapping)
+    ]
+    profile = _build_candidate_retrieval_profile(
+        candidate,
+        listing_price=_to_optional_float(diagnostics.get("price")),
+    )
+
+    reranked_neighbors: list[dict[str, Any]] = []
+    rejected_neighbors: list[dict[str, Any]] = []
+    rejection_summary: dict[str, int] = {}
+    for neighbor in raw_neighbors:
+        rejection_reason = _resolve_neighbor_rejection_reason(profile, neighbor)
+        match_score = _score_neighbor_match(profile, neighbor)
+        enriched_neighbor = {
+            **dict(neighbor),
+            "match_score": match_score,
+        }
+        if rejection_reason is None:
+            if match_score >= MIN_RERANK_MATCH_SCORE:
+                reranked_neighbors.append(enriched_neighbor)
+                continue
+            rejection_reason = "weak_identity_match"
+        rejected_neighbors.append(
+            {
+                **enriched_neighbor,
+                "rejection_reason": rejection_reason,
+            }
+        )
+        rejection_summary[rejection_reason] = rejection_summary.get(rejection_reason, 0) + 1
+
+    reranked_neighbors.sort(
+        key=lambda neighbor: (
+            float(neighbor.get("match_score", 0.0)),
+            float(neighbor.get("similarity", 0.0)),
+        ),
+        reverse=True,
+    )
+    filtered_neighbors = reranked_neighbors[: max(1, reranked_top_n)]
+
+    weighted_neighbors = [
+        (
+            _to_optional_float(neighbor.get("price")),
+            _to_optional_float(neighbor.get("similarity")),
+        )
+        for neighbor in filtered_neighbors
+    ]
+    peer_price = _weighted_average(
+        [price for price, similarity in weighted_neighbors if price is not None and similarity is not None],
+        [
+            similarity
+            for price, similarity in weighted_neighbors
+            if price is not None and similarity is not None
+        ],
+    )
+    average_similarity = (
+        sum(
+            _to_optional_float(neighbor.get("similarity")) or 0.0
+            for neighbor in filtered_neighbors
+        )
+        / len(filtered_neighbors)
+        if filtered_neighbors
+        else 0.0
+    )
+
+    rejected_peer_price_reason = _resolve_peer_price_rejection_reason(
+        profile,
+        peer_price,
+        filtered_neighbor_count=len(filtered_neighbors),
+        min_peer_price_ratio=min_peer_price_ratio,
+        min_peer_neighbor_count=min_peer_neighbor_count,
+    )
+    if rejected_peer_price_reason is not None:
+        rejection_summary[rejected_peer_price_reason] = (
+            rejection_summary.get(rejected_peer_price_reason, 0) + 1
+        )
+        peer_price = None
+
+    listing_price = _to_optional_float(diagnostics.get("price"))
+    raw_neighbor_count = int(diagnostics.get("neighbor_count", len(raw_neighbors)) or 0)
+    return {
+        "catalog_row_index": diagnostics.get("catalog_row_index"),
+        "parent_asin": diagnostics.get("parent_asin"),
+        "title": diagnostics.get("title"),
+        "price": listing_price,
+        "peer_price": peer_price,
+        "raw_peer_price": _to_optional_float(diagnostics.get("peer_price")),
+        "price_gap_vs_peer": _compute_price_gap_vs_peer(listing_price, peer_price),
+        "neighbor_count": len(filtered_neighbors),
+        "raw_neighbor_count": raw_neighbor_count,
+        "average_neighbor_similarity": average_similarity,
+        "top_k_neighbors_used": reranked_top_n,
+        "candidate_pool_size_used": candidate_pool_size,
+        "min_peer_price_ratio_used": float(min_peer_price_ratio),
+        "min_peer_neighbor_count_used": int(min_peer_neighbor_count),
+        "min_similarity_used": diagnostics.get("min_similarity_used"),
+        "neighbors": filtered_neighbors,
+        "rejected_neighbors": rejected_neighbors[:10],
+        "rejection_summary": rejection_summary,
+        "retrieval_status": _resolve_retrieval_status(
+            peer_price=peer_price,
+            raw_neighbor_count=raw_neighbor_count,
+            filtered_neighbor_count=len(filtered_neighbors),
+            rejected_peer_price_reason=rejected_peer_price_reason,
+        ),
+        "query_brand": profile["brand"],
+        "query_accessory_like": profile["is_accessory"],
+        "query_product_kind": profile.get("product_kind"),
+    }
+
+
+def _build_candidate_retrieval_profile(
+    candidate: Candidate,
+    *,
+    listing_price: float | None = None,
+) -> dict[str, Any]:
+    brand = _extract_candidate_brand(candidate)
+    retrieval_title = _build_candidate_retrieval_title(candidate)
+    combined_text = " ".join(
+        part
+        for part in (
+            str(candidate.title or ""),
+            _flatten_mapping_text(candidate.item_specifics),
+        )
+        if part
+    )
+    core_identity_tokens = _extract_core_identity_tokens(
+        retrieval_title,
+        brand_normalized=_normalize_matching_text(brand),
+    )
+    return {
+        "brand": brand,
+        "brand_normalized": _normalize_matching_text(brand),
+        "identity_tokens": _extract_retrieval_tokens(retrieval_title),
+        "core_identity_tokens": core_identity_tokens,
+        "required_identity_tokens": _extract_required_identity_tokens(core_identity_tokens),
+        "product_kind": _infer_product_kind(retrieval_title) or _infer_product_kind(combined_text),
+        "is_accessory": _is_candidate_accessory_listing(candidate, combined_text),
+        "listing_price": (
+            listing_price
+            if listing_price is not None
+            else resolve_candidate_total_price(candidate)
+        ),
+    }
+
+
+def _extract_candidate_brand(candidate: Candidate) -> str | None:
+    if not isinstance(candidate.item_specifics, Mapping):
+        return None
+
+    for preferred_key in PREFERRED_BRAND_KEYS:
+        for raw_key, raw_value in candidate.item_specifics.items():
+            normalized_key = _normalize_matching_text(raw_key)
+            if preferred_key not in normalized_key:
+                continue
+            values = raw_value if isinstance(raw_value, list) else [raw_value]
+            for value in values:
+                cleaned = str(value or "").strip()
+                normalized_value = _normalize_matching_text(cleaned)
+                if not normalized_value or normalized_value in GENERIC_BRAND_VALUES:
+                    continue
+                return cleaned
+    return None
+
+
+def _extract_candidate_item_specific_text(
+    candidate: Candidate,
+    preferred_keys: tuple[str, ...],
+) -> str | None:
+    if not isinstance(candidate.item_specifics, Mapping):
+        return None
+
+    normalized_key_map = {
+        _normalize_matching_text(raw_key): raw_value
+        for raw_key, raw_value in candidate.item_specifics.items()
+    }
+    for preferred_key in preferred_keys:
+        raw_value = normalized_key_map.get(_normalize_matching_text(preferred_key))
+        if raw_value is None:
+            continue
+        values = raw_value if isinstance(raw_value, list) else [raw_value]
+        for value in values:
+            cleaned = _clean_candidate_title_text(str(value or ""))
+            if cleaned:
+                return cleaned
+    return None
+
+
+def _score_neighbor_match(
+    profile: Mapping[str, Any],
+    neighbor: Mapping[str, Any],
+) -> float:
+    similarity = _to_optional_float(neighbor.get("similarity")) or 0.0
+    neighbor_title = str(neighbor.get("title") or "")
+    neighbor_store = str(neighbor.get("store") or "")
+    neighbor_category = str(neighbor.get("main_category") or "")
+    neighbor_tokens = _extract_retrieval_tokens(
+        " ".join(part for part in (neighbor_title, neighbor_store, neighbor_category) if part)
+    )
+
+    query_tokens = set(profile.get("identity_tokens", set()) or set())
+    core_tokens = set(profile.get("core_identity_tokens", set()) or set())
+    required_tokens = set(profile.get("required_identity_tokens", set()) or set())
+    token_overlap = (
+        len(query_tokens.intersection(neighbor_tokens)) / max(1, len(query_tokens))
+        if query_tokens
+        else 0.0
+    )
+    core_overlap = (
+        len(core_tokens.intersection(neighbor_tokens)) / max(1, len(core_tokens))
+        if core_tokens
+        else 0.0
+    )
+    brand_bonus = 0.0
+    brand_normalized = str(profile.get("brand_normalized") or "").strip()
+    if brand_normalized and brand_normalized in _normalize_matching_text(
+        f"{neighbor_title} {neighbor_store}"
+    ):
+        brand_bonus = 1.0
+
+    query_kind = str(profile.get("product_kind") or "").strip()
+    neighbor_kind = _infer_product_kind(
+        " ".join(part for part in (neighbor_title, neighbor_store, neighbor_category) if part)
+    )
+    kind_bonus = 1.0 if _are_product_kinds_compatible(query_kind, neighbor_kind) else 0.0
+
+    category_penalty = 0.0
+    normalized_category = _normalize_matching_text(neighbor_category)
+    if (
+        not bool(profile.get("is_accessory"))
+        and ("case" in normalized_category or "accessories" in normalized_category)
+    ):
+        category_penalty = 0.15
+
+    family_penalty = 0.0
+    if not bool(profile.get("is_accessory")):
+        if required_tokens and not required_tokens.intersection(neighbor_tokens):
+            family_penalty = 0.30
+        elif core_tokens and not core_tokens.intersection(neighbor_tokens):
+            family_penalty = 0.18
+
+    kind_penalty = 0.0
+    if query_kind and neighbor_kind and not _are_product_kinds_compatible(query_kind, neighbor_kind):
+        kind_penalty = 0.25
+
+    return max(
+        0.0,
+        (0.45 * similarity)
+        + (0.17 * token_overlap)
+        + (0.28 * core_overlap)
+        + (0.08 * kind_bonus)
+        + (0.05 * brand_bonus)
+        - category_penalty
+        - family_penalty
+        - kind_penalty,
+    )
+
+
+def _resolve_neighbor_rejection_reason(
+    profile: Mapping[str, Any],
+    neighbor: Mapping[str, Any],
+) -> str | None:
+    neighbor_text = " ".join(
+        part
+        for part in (
+            str(neighbor.get("title") or ""),
+            str(neighbor.get("store") or ""),
+            str(neighbor.get("main_category") or ""),
+        )
+        if part
+    )
+    if bool(profile.get("is_accessory")):
+        return None
+    if _is_accessory_like_text(neighbor_text):
+        return "accessory_mismatch"
+
+    query_kind = str(profile.get("product_kind") or "").strip()
+    neighbor_kind = _infer_product_kind(neighbor_text)
+    if query_kind and neighbor_kind and not _are_product_kinds_compatible(query_kind, neighbor_kind):
+        return "product_type_mismatch"
+    return None
+
+
+def _resolve_peer_price_rejection_reason(
+    profile: Mapping[str, Any],
+    peer_price: float | None,
+    *,
+    filtered_neighbor_count: int = 0,
+    min_peer_price_ratio: float = IMPLAUSIBLY_LOW_PEER_PRICE_RATIO,
+    min_peer_neighbor_count: int = MIN_PEER_NEIGHBOR_COUNT,
+) -> str | None:
+    listing_price = _to_optional_float(profile.get("listing_price"))
+    if peer_price is None or listing_price is None or listing_price <= 0.0:
+        return None
+    if bool(profile.get("is_accessory")):
+        return None
+    if int(filtered_neighbor_count) < max(1, int(min_peer_neighbor_count)):
+        return "insufficient_peer_neighbors"
+    if listing_price < 40.0:
+        return None
+    resolved_ratio = float(min_peer_price_ratio)
+    if resolved_ratio <= 0.0:
+        return None
+    if peer_price / listing_price < resolved_ratio:
+        return "implausibly_low_peer_price"
+    return None
+
+
+def _resolve_retrieval_status(
+    *,
+    peer_price: float | None,
+    raw_neighbor_count: int,
+    filtered_neighbor_count: int,
+    rejected_peer_price_reason: str | None,
+) -> str:
+    if rejected_peer_price_reason is not None:
+        return rejected_peer_price_reason
+    if peer_price is not None:
+        if filtered_neighbor_count < max(1, min(3, raw_neighbor_count)):
+            return "usable_but_thin"
+        return "usable"
+    if raw_neighbor_count <= 0:
+        return "no_neighbors"
+    if filtered_neighbor_count <= 0:
+        return "all_neighbors_filtered"
+    return "insufficient_evidence"
+
+
+def _is_accessory_like_text(text: str) -> bool:
+    normalized = _normalize_matching_text(text)
+    if not normalized:
+        return False
+    if any(phrase in normalized for phrase in ACCESSORY_CUE_PHRASES):
+        return True
+
+    tokens = set(normalized.split())
+    has_accessory_term = bool(tokens.intersection(ACCESSORY_TERMS))
+    if not has_accessory_term and " charging case " not in f" {normalized} ":
+        return False
+
+    has_accessory_context = bool(tokens.intersection(ACCESSORY_CONTEXT_TERMS))
+    if has_accessory_context:
+        return True
+
+    if " for " in f" {normalized} " and tokens.intersection(DEVICE_FAMILY_TERMS):
+        return True
+
+    if " charging case " in f" {normalized} " and not has_accessory_context:
+        return False
+
+    return has_accessory_term and not tokens.intersection(PRIMARY_PRODUCT_TYPE_TERMS)
+
+
+def _is_candidate_accessory_listing(candidate: Candidate, combined_text: str) -> bool:
+    type_text = ""
+    if isinstance(candidate.item_specifics, Mapping):
+        raw_type = candidate.item_specifics.get("Type")
+        if isinstance(raw_type, list):
+            type_text = " ".join(str(value).strip() for value in raw_type if str(value).strip())
+        else:
+            type_text = str(raw_type or "").strip()
+
+    normalized_type = _normalize_matching_text(type_text)
+    if normalized_type:
+        if set(normalized_type.split()).intersection(ACCESSORY_TERMS):
+            return True
+        if any(term in normalized_type for term in PRIMARY_PRODUCT_TYPE_TERMS):
+            return False
+
+    return _is_accessory_like_text(combined_text)
+
+
+def _clean_candidate_title_text(text: str) -> str:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
+
+    for noise_term in TITLE_NOISE_TERMS:
+        cleaned = re.sub(rf"\b{re.escape(noise_term)}\b", " ", cleaned, flags=re.IGNORECASE)
+
+    with_match = re.search(r"\bwith\b(.+)$", cleaned, flags=re.IGNORECASE)
+    if with_match:
+        trailing_text = with_match.group(1)
+        normalized_trailing = _normalize_matching_text(trailing_text)
+        if any(term in normalized_trailing for term in REMOVABLE_WITH_TERMS):
+            cleaned = cleaned[:with_match.start()].strip()
+
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -_,;/")
+    return cleaned
+
+
+def _extract_retrieval_tokens(text: str) -> set[str]:
+    normalized = _normalize_matching_text(text)
+    if not normalized:
+        return set()
+    return {
+        token
+        for token in normalized.split()
+        if len(token) >= 2 and token not in RETRIEVAL_STOPWORDS
+    }
+
+
+def _extract_core_identity_tokens(
+    text: str,
+    *,
+    brand_normalized: str = "",
+) -> set[str]:
+    brand_tokens = set(brand_normalized.split()) if brand_normalized else set()
+    tokens = _extract_retrieval_tokens(text)
+    core_tokens = {
+        token
+        for token in tokens
+        if token not in brand_tokens
+        and token not in CORE_IDENTITY_STOPWORDS
+        and token not in PRIMARY_PRODUCT_TYPE_TOKENS
+    }
+    if core_tokens:
+        return core_tokens
+    return {token for token in tokens if token not in brand_tokens}
+
+
+def _extract_required_identity_tokens(tokens: set[str]) -> set[str]:
+    return {
+        token
+        for token in tokens
+        if len(token) >= 4
+        or any(character.isdigit() for character in token)
+        or token in IMPORTANT_VARIANT_TOKENS
+    }
+
+
+def _infer_product_kind(text: str) -> str | None:
+    tokens = _extract_retrieval_tokens(text)
+    if not tokens:
+        return None
+    best_kind: str | None = None
+    best_score = 0
+    for product_kind, aliases in PRODUCT_KIND_ALIASES.items():
+        overlap_score = len(tokens.intersection(aliases))
+        if overlap_score > best_score:
+            best_kind = product_kind
+            best_score = overlap_score
+    return best_kind
+
+
+def _are_product_kinds_compatible(
+    query_kind: str,
+    neighbor_kind: str,
+) -> bool:
+    resolved_query_kind = str(query_kind or "").strip()
+    resolved_neighbor_kind = str(neighbor_kind or "").strip()
+    if not resolved_query_kind or not resolved_neighbor_kind:
+        return False
+    if resolved_query_kind == resolved_neighbor_kind:
+        return True
+    return (
+        resolved_query_kind in AUDIO_PRODUCT_KINDS
+        and resolved_neighbor_kind in AUDIO_PRODUCT_KINDS
+    )
+
+
+def _resolve_reranked_top_n(top_k_neighbors: int | None) -> int:
+    if top_k_neighbors is None:
+        return DEFAULT_RERANKED_NEIGHBOR_COUNT
+    value = int(top_k_neighbors)
+    if value <= 0:
+        raise ValueError("top_k_neighbors must be a positive integer when provided.")
+    return value
+
+
+def _resolve_candidate_pool_size(
+    candidate_pool_size: int | None,
+    *,
+    reranked_top_n: int,
+) -> int:
+    if candidate_pool_size is None:
+        return reranked_top_n
+    value = int(candidate_pool_size)
+    if value <= 0:
+        raise ValueError("retrieval candidate pool size must be a positive integer.")
+    return max(value, reranked_top_n)
+
+
+def _compute_price_gap_vs_peer(
+    price: float | None,
+    peer_price: float | None,
+) -> float | None:
+    if price is None or peer_price is None or peer_price <= 0.0:
+        return None
+    return (peer_price - price) / peer_price
+
+
+def _weighted_average(values: list[float | None], weights: list[float | None]) -> float | None:
+    resolved_pairs = [
+        (float(value), float(weight))
+        for value, weight in zip(values, weights)
+        if value is not None and weight is not None and weight > 0.0
+    ]
+    if not resolved_pairs:
+        return None
+
+    weighted_total = sum(value * weight for value, weight in resolved_pairs)
+    total_weight = sum(weight for _, weight in resolved_pairs)
+    if total_weight <= 0.0:
+        return None
+    return weighted_total / total_weight
 
 
 def _flatten_mapping_text(value: Mapping[str, Any] | None) -> str:
@@ -479,18 +1402,57 @@ def _flatten_mapping_text(value: Mapping[str, Any] | None) -> str:
     return " ".join(parts).strip()
 
 
-def _extract_money_value(value: Any) -> float | None:
+def _normalize_matching_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def _extract_money_value(
+    value: Any,
+    *,
+    prefer_converted_usd: bool = False,
+) -> float | None:
     if isinstance(value, Mapping):
+        if prefer_converted_usd:
+            converted_currency = str(value.get("convertedFromCurrency") or "").strip().upper()
+            converted_value = _to_optional_float(value.get("convertedFromValue"))
+            if converted_currency == "USD" and converted_value is not None:
+                return converted_value
         return _to_optional_float(value.get("value"))
     return _to_optional_float(value)
 
 
-def _extract_min_shipping_cost(shipping_options: list[dict[str, Any]]) -> float | None:
+def _extract_money_currency(
+    value: Any,
+    *,
+    prefer_converted_usd: bool = False,
+) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    if prefer_converted_usd:
+        converted_currency = str(value.get("convertedFromCurrency") or "").strip().upper()
+        converted_value = _to_optional_float(value.get("convertedFromValue"))
+        if converted_currency == "USD" and converted_value is not None:
+            return converted_currency
+    currency = str(value.get("currency") or "").strip().upper()
+    return currency or None
+
+
+def _extract_min_shipping_cost(
+    shipping_options: list[dict[str, Any]],
+    *,
+    prefer_converted_usd: bool = False,
+) -> float | None:
     costs: list[float] = []
     for option in shipping_options:
         if not isinstance(option, Mapping):
             continue
-        shipping_cost = _extract_money_value(option.get("shippingCost"))
+        shipping_cost = _extract_money_value(
+            option.get("shippingCost"),
+            prefer_converted_usd=prefer_converted_usd,
+        )
         if shipping_cost is not None:
             costs.append(max(0.0, shipping_cost))
             continue

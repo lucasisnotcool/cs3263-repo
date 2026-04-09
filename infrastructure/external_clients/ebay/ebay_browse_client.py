@@ -50,6 +50,19 @@ class EbayBrowseClient(MarketplaceClient):
         response.raise_for_status()
         return response.json()
 
+    def get_items_by_item_group_response(self, item_group_id: str) -> requests.Response:
+        url = f"{self.base_url}/item/get_items_by_item_group"
+        params = {
+            "item_group_id": item_group_id,
+        }
+
+        return requests.get(url, headers=self.headers, params=params, timeout=30)
+
+    def get_items_by_item_group(self, item_group_id: str) -> Dict[str, Any]:
+        response = self.get_items_by_item_group_response(item_group_id)
+        response.raise_for_status()
+        return response.json()
+
     def search_by_epid_response(self, epid: str, limit: int = 5) -> requests.Response:
         url = f"{self.base_url}/item_summary/search"
         params = {

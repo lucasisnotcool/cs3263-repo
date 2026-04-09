@@ -15,6 +15,12 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import normalize
 
+from .listing_kind import (
+    LISTING_KIND_OTHER,
+    infer_listing_kind_from_row,
+    normalize_listing_kind,
+)
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -94,6 +100,12 @@ def train_worth_buying_pipeline(
         if train_catalog["average_rating"].notna().any()
         else 3.8
     )
+    kind_models = _build_kind_models(
+        train_catalog=train_catalog,
+        word_vectorizer=feature_bundle["word_vectorizer"],
+        char_vectorizer=feature_bundle["char_vectorizer"],
+        config=resolved_config,
+    )
 
     bundle = {
         "config": asdict(resolved_config),
@@ -101,6 +113,7 @@ def train_worth_buying_pipeline(
         "char_vectorizer": feature_bundle["char_vectorizer"],
         "neighbor_model": neighbor_model,
         "train_catalog": train_catalog,
+        "kind_models": kind_models,
         "global_rating_mean": global_rating_mean,
     }
 
@@ -117,6 +130,14 @@ def train_worth_buying_pipeline(
         "rows_fitted": int(len(train_catalog)),
         "priced_rows": int(train_catalog["price"].notna().sum()),
         "rows_with_reviews": int((source_catalog["review_count"] > 0).sum()),
+        "listing_kind_counts": {
+            key: int(value)
+            for key, value in train_catalog["listing_kind"].value_counts(dropna=False).to_dict().items()
+        },
+        "kind_model_rows": {
+            key: int(model_payload["rows"])
+            for key, model_payload in kind_models.items()
+        },
         "global_rating_mean": global_rating_mean,
         "config": asdict(resolved_config),
     }
@@ -185,25 +206,15 @@ def score_worth_buying_catalog(
 
     bundle = model_bundle if model_bundle is not None else load_model(model_path)
     config = _resolve_runtime_config(bundle, config_overrides=config_overrides)
-    train_catalog = bundle["train_catalog"]
     resolved_catalog = _normalize_catalog_frame(catalog).reset_index(drop=True)
-
-    query_matrix = _transform_catalog(resolved_catalog, bundle)
-    candidate_neighbors = min(
-        max(2, config.top_k_neighbors * config.neighbor_candidate_multiplier + 1),
-        len(train_catalog),
-    )
-    distances, indices = _chunked_kneighbors(
-        bundle["neighbor_model"],
-        query_matrix,
-        candidate_neighbors,
-        config.neighbor_query_chunk_size,
+    search_results = _collect_neighbor_candidates(
+        query_catalog=resolved_catalog,
+        bundle=bundle,
+        config=config,
     )
     return _score_catalog(
         query_catalog=resolved_catalog,
-        train_catalog=train_catalog,
-        distances=distances,
-        indices=indices,
+        search_results=search_results,
         config=config,
         global_rating_mean=float(bundle["global_rating_mean"]),
     )
@@ -221,28 +232,21 @@ def inspect_worth_buying_catalog_neighbors(
 
     bundle = model_bundle if model_bundle is not None else load_model(model_path)
     config = _resolve_runtime_config(bundle, config_overrides=config_overrides)
-    train_catalog = bundle["train_catalog"]
     resolved_catalog = _normalize_catalog_frame(catalog).reset_index(drop=True)
-
-    query_matrix = _transform_catalog(resolved_catalog, bundle)
-    candidate_neighbors = min(
-        max(2, config.top_k_neighbors * config.neighbor_candidate_multiplier + 1),
-        len(train_catalog),
-    )
-    distances, indices = _chunked_kneighbors(
-        bundle["neighbor_model"],
-        query_matrix,
-        candidate_neighbors,
-        config.neighbor_query_chunk_size,
+    search_results = _collect_neighbor_candidates(
+        query_catalog=resolved_catalog,
+        bundle=bundle,
+        config=config,
     )
 
     diagnostics: list[dict[str, Any]] = []
     for row_index, (_, product) in enumerate(resolved_catalog.iterrows()):
+        search_result = search_results[row_index]
         neighbors = _select_neighbors(
             query_parent_asin=_safe_get_string(product, "parent_asin"),
-            train_catalog=train_catalog,
-            candidate_indices=indices[row_index],
-            candidate_distances=distances[row_index],
+            train_catalog=search_result["train_catalog"],
+            candidate_indices=search_result["indices"],
+            candidate_distances=search_result["distances"],
             config=config,
         )
         average_similarity = (
@@ -265,6 +269,8 @@ def inspect_worth_buying_catalog_neighbors(
                 "average_neighbor_similarity": average_similarity,
                 "top_k_neighbors_used": int(config.top_k_neighbors),
                 "min_similarity_used": float(config.min_similarity),
+                "listing_kind": _safe_get_string(product, "listing_kind"),
+                "retrieval_listing_kind": _safe_get_string(search_result, "listing_kind"),
                 "neighbors": neighbors,
             }
         )
@@ -279,10 +285,24 @@ def _normalize_catalog_frame(frame: pd.DataFrame) -> pd.DataFrame:
         "store",
         "main_category",
         "product_document",
+        "listing_kind",
     ):
         if column not in normalized.columns:
             normalized[column] = ""
         normalized[column] = normalized[column].map(_safe_text)
+
+    if "listing_kind" not in normalized.columns:
+        normalized["listing_kind"] = ""
+    normalized["listing_kind"] = normalized["listing_kind"].map(normalize_listing_kind)
+    missing_kind_mask = normalized["listing_kind"].eq(LISTING_KIND_OTHER)
+    if missing_kind_mask.any():
+        inferred_kinds = normalized.loc[missing_kind_mask].apply(
+            lambda row: infer_listing_kind_from_row(row.to_dict()),
+            axis=1,
+        )
+        normalized.loc[missing_kind_mask, "listing_kind"] = [
+            normalize_listing_kind(value) for value in inferred_kinds.tolist()
+        ]
 
     for column in (
         "price",
@@ -308,6 +328,57 @@ def _normalize_catalog_frame(frame: pd.DataFrame) -> pd.DataFrame:
     ).fillna(0).astype(int)
 
     return normalized
+
+
+def _build_kind_models(
+    *,
+    train_catalog: pd.DataFrame,
+    word_vectorizer: TfidfVectorizer,
+    char_vectorizer: TfidfVectorizer,
+    config: WorthBuyingConfig,
+) -> dict[str, dict[str, Any]]:
+    kind_models: dict[str, dict[str, Any]] = {}
+    if "listing_kind" not in train_catalog.columns:
+        return kind_models
+
+    for listing_kind in sorted(
+        {
+            normalize_listing_kind(value)
+            for value in train_catalog["listing_kind"].dropna().tolist()
+        }
+    ):
+        if not listing_kind or listing_kind == LISTING_KIND_OTHER:
+            continue
+        subset = train_catalog.loc[
+            train_catalog["listing_kind"] == listing_kind
+        ].reset_index(drop=True)
+        if len(subset) < 2:
+            continue
+
+        feature_matrix = _transform_catalog(
+            subset,
+            {
+                "word_vectorizer": word_vectorizer,
+                "char_vectorizer": char_vectorizer,
+            },
+        )
+        candidate_neighbors = min(
+            max(2, config.top_k_neighbors * config.neighbor_candidate_multiplier + 1),
+            len(subset),
+        )
+        neighbor_model = NearestNeighbors(
+            metric="cosine",
+            algorithm="brute",
+            n_neighbors=candidate_neighbors,
+        )
+        neighbor_model.fit(feature_matrix)
+        kind_models[listing_kind] = {
+            "rows": int(len(subset)),
+            "train_catalog": subset,
+            "neighbor_model": neighbor_model,
+        }
+
+    return kind_models
 
 
 def _fit_product_vectorizers(
@@ -369,19 +440,18 @@ def _chunked_kneighbors(
 def _score_catalog(
     *,
     query_catalog: pd.DataFrame,
-    train_catalog: pd.DataFrame,
-    distances: np.ndarray,
-    indices: np.ndarray,
+    search_results: list[dict[str, Any]],
     config: WorthBuyingConfig,
     global_rating_mean: float,
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for row_index, (_, product) in enumerate(query_catalog.iterrows()):
+        search_result = search_results[row_index]
         neighbors = _select_neighbors(
             query_parent_asin=_safe_text(product["parent_asin"]),
-            train_catalog=train_catalog,
-            candidate_indices=indices[row_index],
-            candidate_distances=distances[row_index],
+            train_catalog=search_result["train_catalog"],
+            candidate_indices=search_result["indices"],
+            candidate_distances=search_result["distances"],
             config=config,
         )
         neighbor_count = len(neighbors)
@@ -458,10 +528,12 @@ def _score_catalog(
                     float(product["rating_number"]) if pd.notna(product["rating_number"]) else None
                 ),
                 "review_count": int(product["review_count"]),
+                "listing_kind": _safe_text(product.get("listing_kind")),
                 "peer_price": peer_price,
                 "price_gap_vs_peer": price_gap_vs_peer,
                 "neighbor_count": neighbor_count,
                 "average_neighbor_similarity": average_similarity,
+                "retrieval_listing_kind": _safe_text(search_result.get("listing_kind")),
                 "price_alignment_score": price_score,
                 "bayesian_rating_score": bayesian_rating_score,
                 "review_quality_score": review_quality_score,
@@ -474,6 +546,54 @@ def _score_catalog(
         by=["worth_buying_score", "confidence_score"],
         ascending=[False, False],
     ).reset_index(drop=True)
+
+
+def _collect_neighbor_candidates(
+    *,
+    query_catalog: pd.DataFrame,
+    bundle: Mapping[str, Any],
+    config: WorthBuyingConfig,
+) -> list[dict[str, Any]]:
+    kind_models = bundle.get("kind_models")
+    kind_models = kind_models if isinstance(kind_models, Mapping) else {}
+    grouped_indices: dict[str, list[int]] = {}
+    for row_index, (_, product) in enumerate(query_catalog.iterrows()):
+        listing_kind = normalize_listing_kind(product.get("listing_kind"))
+        bundle_key = listing_kind if listing_kind in kind_models else "__all__"
+        grouped_indices.setdefault(bundle_key, []).append(row_index)
+
+    search_results: list[dict[str, Any] | None] = [None] * len(query_catalog)
+    for bundle_key, row_indices in grouped_indices.items():
+        search_bundle = (
+            kind_models[bundle_key]
+            if bundle_key != "__all__"
+            else {
+                "train_catalog": bundle["train_catalog"],
+                "neighbor_model": bundle["neighbor_model"],
+            }
+        )
+        query_slice = query_catalog.iloc[row_indices].reset_index(drop=True)
+        query_matrix = _transform_catalog(query_slice, bundle)
+        train_catalog = search_bundle["train_catalog"]
+        candidate_neighbors = min(
+            max(2, config.top_k_neighbors * config.neighbor_candidate_multiplier + 1),
+            len(train_catalog),
+        )
+        distances, indices = _chunked_kneighbors(
+            search_bundle["neighbor_model"],
+            query_matrix,
+            candidate_neighbors,
+            config.neighbor_query_chunk_size,
+        )
+        for local_index, row_index in enumerate(row_indices):
+            search_results[row_index] = {
+                "train_catalog": train_catalog,
+                "distances": distances[local_index],
+                "indices": indices[local_index],
+                "listing_kind": bundle_key if bundle_key != "__all__" else "",
+            }
+
+    return [result or {} for result in search_results]
 
 
 def _select_neighbors(
@@ -499,6 +619,9 @@ def _select_neighbors(
             {
                 "parent_asin": candidate_parent_asin,
                 "title": _safe_text(candidate.get("title")),
+                "store": _safe_text(candidate.get("store")),
+                "main_category": _safe_text(candidate.get("main_category")),
+                "listing_kind": _safe_text(candidate.get("listing_kind")),
                 "price": float(candidate["price"]),
                 "similarity": similarity,
                 "average_rating": _to_optional_float(candidate.get("average_rating")),

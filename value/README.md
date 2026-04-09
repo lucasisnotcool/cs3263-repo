@@ -206,6 +206,18 @@ concatenating:
 - description
 - flattened key-value metadata details
 
+The split builder now also emits a coarse `listing_kind` label for retrieval
+filtering. Current values are:
+
+- `device`
+- `case`
+- `cable`
+- `charger`
+- `tips`
+- `cleaning`
+- `accessory`
+- `other`
+
 ```mermaid
 flowchart LR
     A[title]
@@ -697,9 +709,24 @@ python scripts/run_normalization.py \
   --url "https://www.ebay.com.sg/itm/206158794969" \
   --score-bayesian \
   --worth-buying-model-path value/artifacts/amazon_worth_buying_quick.joblib \
+  --use-converted-usd \
+  --retrieval-candidate-pool-size 500 \
   --top-k-neighbors 5 \
+  --min-peer-price-ratio 0.50 \
+  --min-peer-neighbors 3 \
   --summary
 ```
+
+In that mode, the retriever now pulls a larger raw candidate pool from the
+Electronics catalog, reranks the pool with stricter product-family checks, and
+then estimates `peer_price` from the final top matches. If the remaining
+neighbors are too thin, or if the inferred peer price is below the configured
+`--min-peer-price-ratio` cutoff, the bridge drops `peer_price` and the Bayesian
+model falls back to the no-peer-price path. Use `--min-peer-neighbors` to
+require a minimum number of accepted reranked matches before price evidence is
+trusted. Use `--use-converted-usd` when you want the eBay side to prefer
+eBay-provided USD conversions (`convertedFromValue`) instead of the localized
+marketplace currency.
 
 To inspect how retrieval behaves across different `k` values and generate a
 graph:

@@ -76,10 +76,53 @@ def parse_args():
         help="Optional manual peer price to supply to the Bayesian value model.",
     )
     parser.add_argument(
+        "--exclude-shipping",
+        action="store_true",
+        help=(
+            "Use item price only for retrieval and Bayesian scoring instead of "
+            "item price plus shipping."
+        ),
+    )
+    parser.add_argument(
+        "--use-converted-usd",
+        action="store_true",
+        help=(
+            "Prefer eBay's convertedFromValue in USD for item and shipping prices "
+            "when available."
+        ),
+    )
+    parser.add_argument(
         "--top-k-neighbors",
         type=int,
         default=None,
-        help="Optional override for the retrieval model's top-k neighbor count.",
+        help="Optional override for the final reranked neighbor count used for peer-price averaging.",
+    )
+    parser.add_argument(
+        "--retrieval-candidate-pool-size",
+        type=int,
+        default=500,
+        help=(
+            "Number of raw retrieval candidates to inspect before reranking. "
+            "The eBay bridge will rerank this pool and average the top final matches."
+        ),
+    )
+    parser.add_argument(
+        "--min-peer-price-ratio",
+        type=float,
+        default=0.18,
+        help=(
+            "Ignore retrieved peer prices below this fraction of the listing price. "
+            "For example, 0.50 drops peer prices that are more than 50%% below the listing."
+        ),
+    )
+    parser.add_argument(
+        "--min-peer-neighbors",
+        type=int,
+        default=3,
+        help=(
+            "Ignore retrieved peer prices unless at least this many reranked neighbors "
+            "remain after filtering."
+        ),
     )
     parser.add_argument(
         "--k-values",
@@ -143,6 +186,7 @@ def build_response_snapshot(response):
 def print_json(payload):
     serialized = json.dumps(payload, indent=2, ensure_ascii=False)
     sys.stdout.buffer.write((serialized + "\n").encode("utf-8", errors="replace"))
+    sys.stdout.flush()
 
 
 def get_seller_id_from_item_body(item_body):
@@ -315,6 +359,11 @@ def main():
                 ewom_model_paths=_resolve_ewom_model_paths(args)
                 if args.score_bayesian
                 else None,
+                include_shipping_in_total=not args.exclude_shipping,
+                prefer_converted_usd=args.use_converted_usd,
+                retrieval_candidate_pool_size=args.retrieval_candidate_pool_size,
+                min_peer_price_ratio=args.min_peer_price_ratio,
+                min_peer_neighbor_count=args.min_peer_neighbors,
             )
             plot_path = write_candidate_k_sweep_plot(
                 k_sweep_result,
@@ -338,6 +387,11 @@ def main():
                 worth_buying_model_path=args.worth_buying_model_path,
                 top_k_neighbors=args.top_k_neighbors,
                 ewom_model_paths=_resolve_ewom_model_paths(args),
+                include_shipping_in_total=not args.exclude_shipping,
+                prefer_converted_usd=args.use_converted_usd,
+                retrieval_candidate_pool_size=args.retrieval_candidate_pool_size,
+                min_peer_price_ratio=args.min_peer_price_ratio,
+                min_peer_neighbor_count=args.min_peer_neighbors,
             )
             print_json(
                 summarize_ebay_candidate_value_result(scored_result)

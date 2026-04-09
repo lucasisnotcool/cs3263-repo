@@ -692,6 +692,17 @@ python scripts/run_normalization.py \
   --summary
 ```
 
+Compare two scored listings:
+
+```bash
+python scripts/run_normalization.py \
+  --url "https://www.ebay.com.sg/itm/206158794969" \
+  --url "https://www.ebay.com.sg/itm/197809836976" \
+  --score-bayesian \
+  --compare \
+  --summary
+```
+
 Optional peer-price inputs:
 
 ```bash
@@ -746,6 +757,9 @@ In scoring mode, the output includes:
 - optional retrieval-side `market_context` with inferred `peer_price`
 - optional `ewom_result` from seller feedback texts
 - final `bayesian_result`
+- a retrieval-aware final prediction that can return `insufficient_evidence`
+  when price context is missing or too weak, even if the raw Bayesian
+  probability is still computed for debugging
 
 With `--k-values`, the command also writes an HTML plot under
 `value/artifacts/` unless you override the path with `--k-sweep-output`.

@@ -15,6 +15,7 @@ from infrastructure.external_clients.ebay.ebay_feedback_client import EbayFeedba
 from infrastructure.external_clients.ebay.ebay_url_parser import EbayUrlParser
 from core.services.normalization_service import NormalizationService
 from value.ebay_value import (
+    compare_ebay_candidate_value_results,
     score_ebay_candidate_value,
     summarize_candidate_market_context_k_sweep,
     summarize_ebay_candidate_value_result,
@@ -67,6 +68,14 @@ def parse_args():
         help=(
             "Print a compact scoring summary instead of the full JSON payload. "
             "Best used with --score-bayesian."
+        ),
+    )
+    parser.add_argument(
+        "--compare",
+        action="store_true",
+        help=(
+            "Compare exactly two scored listings. Requires two --url values and "
+            "--score-bayesian."
         ),
     )
     parser.add_argument(
@@ -319,7 +328,11 @@ def main():
         raise ValueError("--summary currently requires --score-bayesian or --k-values.")
     if args.k_values and args.worth_buying_model_path is None:
         raise ValueError("--k-values requires --worth-buying-model-path.")
+    if args.compare and not args.score_bayesian:
+        raise ValueError("--compare requires --score-bayesian.")
     urls = args.urls or DEFAULT_URLS
+    if args.compare and len(urls) != 2:
+        raise ValueError("--compare requires exactly two --url values.")
 
     auth_client = EbayAuthClient(scopes=AUTH_SCOPES)
 
@@ -345,6 +358,37 @@ def main():
             if index:
                 print_separator()
             print_json(get_raw_response_for_url(url, browse_client, url_parser, feedback_client=feedback_client))
+        return
+
+    if args.compare:
+        scored_results = []
+        for url in urls:
+            candidate = normalization_service.normalize(url)
+            scored_results.append(
+                score_ebay_candidate_value(
+                    candidate,
+                    peer_price=args.peer_price,
+                    worth_buying_model_path=args.worth_buying_model_path,
+                    top_k_neighbors=args.top_k_neighbors,
+                    ewom_model_paths=_resolve_ewom_model_paths(args),
+                    include_shipping_in_total=not args.exclude_shipping,
+                    prefer_converted_usd=args.use_converted_usd,
+                    retrieval_candidate_pool_size=args.retrieval_candidate_pool_size,
+                    min_peer_price_ratio=args.min_peer_price_ratio,
+                    min_peer_neighbor_count=args.min_peer_neighbors,
+                )
+            )
+        comparison_payload = compare_ebay_candidate_value_results(
+            scored_results[0],
+            scored_results[1],
+        )
+        if not args.summary:
+            comparison_payload = {
+                "listing_a_result": scored_results[0],
+                "listing_b_result": scored_results[1],
+                **comparison_payload,
+            }
+        print_json(comparison_payload)
         return
 
     for index, url in enumerate(urls):

@@ -9,6 +9,7 @@ from value.ebay_value import (
     _is_accessory_like_text,
     build_bayesian_input_from_candidate,
     build_worth_buying_query_row,
+    compare_ebay_candidate_value_results,
     infer_candidate_market_context,
     score_ebay_candidate_value,
     summarize_candidate_market_context_k_sweep,
@@ -163,6 +164,47 @@ class EbayValueBridgeTests(unittest.TestCase):
         )
         self.assertTrue(result["pricing"]["prefer_converted_usd"])
         self.assertEqual(result["pricing"]["total_price_currency"], "USD")
+
+    @patch("value.ebay_value.infer_candidate_market_context")
+    def test_score_ebay_candidate_value_marks_missing_retrieval_price_as_insufficient(
+        self,
+        infer_market_context_mock,
+    ) -> None:
+        infer_market_context_mock.return_value = {
+            "peer_price": None,
+            "retrieval_status": "all_neighbors_filtered",
+            "neighbor_count": 0,
+        }
+        candidate = Candidate(
+            source_url="https://www.ebay.com.sg/itm/123",
+            page_type="listing",
+            title="Wireless Earbuds",
+            price={"value": "79.0", "currency": "SGD"},
+            product_rating_count=320,
+            product_average_rating=4.5,
+            seller_feedback_texts=[
+                "Fast shipping and great communication.",
+                "Arrived exactly as described.",
+            ],
+        )
+
+        result = score_ebay_candidate_value(
+            candidate,
+            worth_buying_model_path="value/artifacts/amazon_worth_buying_quick.joblib",
+            ewom_result={
+                "review_count": 2,
+                "aggregate": {
+                    "mean_deception_probability": 0.10,
+                    "final_ewom_score_0_to_100": 72.0,
+                    "final_ewom_magnitude_0_to_100": 61.0,
+                },
+            },
+        )
+
+        self.assertEqual(result["decision"]["prediction"], "insufficient_evidence")
+        self.assertEqual(result["decision"]["reason"], "all_neighbors_filtered")
+        self.assertEqual(result["pricing"]["peer_price_source"], "none")
+        self.assertIsNone(result["bayesian_result"]["resolved_input"]["peer_price"])
 
     def test_retrieval_title_prefers_structured_model_over_noisy_listing_title(self) -> None:
         candidate = Candidate(
@@ -547,11 +589,193 @@ class EbayValueBridgeTests(unittest.TestCase):
         self.assertEqual(summary["price_gap_vs_peer"], 0.12)
         self.assertEqual(summary["good_value_probability"], 0.73)
         self.assertEqual(summary["prediction"], "good_value")
+        self.assertEqual(summary["prediction_reason"], None)
         self.assertEqual(summary["trust_probability"], 0.81)
         self.assertEqual(summary["ewom_score_0_to_100"], 66.0)
         self.assertEqual(summary["seller_feedback_review_count"], 8)
         self.assertIsNone(summary["retrieval_status"])
         self.assertIsNone(summary["retrieved_neighbor_count"])
+        self.assertIsNone(summary["peer_price_source"])
+
+    def test_summarize_ebay_candidate_value_result_marks_missing_retrieval_price_as_insufficient(self) -> None:
+        result = {
+            "candidate": {
+                "source_url": "https://www.ebay.com.sg/itm/123",
+                "title": "USB-C Charger",
+            },
+            "pricing": {
+                "total_price_currency": "USD",
+                "peer_price_source": "none",
+            },
+            "decision": {
+                "prediction": "insufficient_evidence",
+                "reason": "all_neighbors_filtered",
+            },
+            "market_context": {
+                "retrieval_status": "all_neighbors_filtered",
+                "neighbor_count": 0,
+            },
+            "bayesian_result": {
+                "good_value_probability": 0.73,
+                "derived_metrics": {
+                    "price_gap_vs_peer": None,
+                },
+                "resolved_input": {
+                    "price": 24.99,
+                    "peer_price": None,
+                    "trust_probability": 0.81,
+                    "ewom_score_0_to_100": 66.0,
+                },
+                "fused_agent_signals": {
+                    "review_count": 8,
+                },
+            },
+        }
+
+        summary = summarize_ebay_candidate_value_result(result)
+
+        self.assertEqual(summary["prediction"], "insufficient_evidence")
+        self.assertEqual(summary["prediction_reason"], "all_neighbors_filtered")
+        self.assertEqual(summary["retrieval_status"], "all_neighbors_filtered")
+        self.assertEqual(summary["retrieved_neighbor_count"], 0)
+        self.assertEqual(summary["peer_price_source"], "none")
+
+    def test_compare_ebay_candidate_value_results_prefers_higher_supported_probability(self) -> None:
+        result_a = {
+            "candidate": {
+                "source_url": "https://www.ebay.com.sg/itm/a",
+                "title": "Listing A",
+            },
+            "pricing": {
+                "total_price_currency": "USD",
+                "peer_price_source": "retrieval",
+            },
+            "decision": {
+                "prediction": "good_value",
+                "reason": "bayesian_probability",
+            },
+            "market_context": {
+                "retrieval_status": "usable",
+                "neighbor_count": 5,
+            },
+            "bayesian_result": {
+                "good_value_probability": 0.61,
+                "derived_metrics": {
+                    "price_gap_vs_peer": 0.05,
+                },
+                "resolved_input": {
+                    "price": 100.0,
+                    "peer_price": 105.0,
+                    "trust_probability": 0.80,
+                    "ewom_score_0_to_100": 66.0,
+                },
+            },
+        }
+        result_b = {
+            "candidate": {
+                "source_url": "https://www.ebay.com.sg/itm/b",
+                "title": "Listing B",
+            },
+            "pricing": {
+                "total_price_currency": "USD",
+                "peer_price_source": "retrieval",
+            },
+            "decision": {
+                "prediction": "not_good_value",
+                "reason": "bayesian_probability",
+            },
+            "market_context": {
+                "retrieval_status": "usable",
+                "neighbor_count": 5,
+            },
+            "bayesian_result": {
+                "good_value_probability": 0.42,
+                "derived_metrics": {
+                    "price_gap_vs_peer": -0.10,
+                },
+                "resolved_input": {
+                    "price": 110.0,
+                    "peer_price": 100.0,
+                    "trust_probability": 0.75,
+                    "ewom_score_0_to_100": 62.0,
+                },
+            },
+        }
+
+        comparison = compare_ebay_candidate_value_results(result_a, result_b)
+
+        self.assertEqual(comparison["comparison"]["verdict"], "better_A")
+        self.assertAlmostEqual(
+            comparison["comparison"]["good_value_probability_delta"],
+            0.19,
+        )
+
+    def test_compare_ebay_candidate_value_results_respects_insufficient_evidence(self) -> None:
+        result_a = {
+            "candidate": {
+                "source_url": "https://www.ebay.com.sg/itm/a",
+                "title": "Listing A",
+            },
+            "pricing": {
+                "total_price_currency": "USD",
+                "peer_price_source": "retrieval",
+            },
+            "decision": {
+                "prediction": "good_value",
+                "reason": "bayesian_probability",
+            },
+            "market_context": {
+                "retrieval_status": "usable",
+                "neighbor_count": 5,
+            },
+            "bayesian_result": {
+                "good_value_probability": 0.61,
+                "derived_metrics": {
+                    "price_gap_vs_peer": 0.05,
+                },
+                "resolved_input": {
+                    "price": 100.0,
+                    "peer_price": 105.0,
+                    "trust_probability": 0.80,
+                    "ewom_score_0_to_100": 66.0,
+                },
+            },
+        }
+        result_b = {
+            "candidate": {
+                "source_url": "https://www.ebay.com.sg/itm/b",
+                "title": "Listing B",
+            },
+            "pricing": {
+                "total_price_currency": "SGD",
+                "peer_price_source": "none",
+            },
+            "decision": {
+                "prediction": "insufficient_evidence",
+                "reason": "insufficient_peer_neighbors",
+            },
+            "market_context": {
+                "retrieval_status": "insufficient_peer_neighbors",
+                "neighbor_count": 1,
+            },
+            "bayesian_result": {
+                "good_value_probability": 0.66,
+                "derived_metrics": {
+                    "price_gap_vs_peer": None,
+                },
+                "resolved_input": {
+                    "price": 153.58,
+                    "peer_price": None,
+                    "trust_probability": 0.84,
+                    "ewom_score_0_to_100": 60.96,
+                },
+            },
+        }
+
+        comparison = compare_ebay_candidate_value_results(result_a, result_b)
+
+        self.assertEqual(comparison["comparison"]["verdict"], "insufficient_evidence")
+        self.assertIn("Listing B lacks sufficient price evidence", comparison["comparison"]["reasons"][0])
 
     @patch("value.ebay_value.inspect_worth_buying_catalog_neighbors")
     def test_sweep_candidate_market_context_k_builds_sorted_k_rows(
@@ -597,6 +821,8 @@ class EbayValueBridgeTests(unittest.TestCase):
         self.assertEqual([row["k"] for row in sweep["k_sweep"]], [1, 3])
         self.assertEqual(sweep["k_sweep"][0]["peer_price"], 31.0)
         self.assertEqual(sweep["k_sweep"][1]["peer_price"], 28.963963963963966)
+        self.assertIsNone(sweep["k_sweep"][0]["prediction"])
+        self.assertIsNone(sweep["k_sweep"][0]["prediction_reason"])
         self.assertIsNone(sweep["k_sweep"][0]["good_value_probability"])
 
     def test_summarize_candidate_market_context_k_sweep_returns_compact_rows(self) -> None:

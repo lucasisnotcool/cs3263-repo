@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>eBay Listing Comparator</title>
+    <meta
+      name="description"
+      content="Compare two eBay listings side by side and get a cleaner buying recommendation."
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+    <div class="ambient ambient-three"></div>
+
+    <main class="page-shell">
+      <section class="hero-panel" data-animate>
+        <div class="hero-copy">
+          <p class="eyebrow">eBay comparison</p>
+          <h1>Paste two listings. See which one deserves your money.</h1>
+          <p class="hero-text">
+            Compare two options side by side, check the price gap against the market, and
+            land on a faster buying decision without digging through every listing detail
+            yourself.
+          </p>
+
+          <div class="hero-notes">
+            <div class="note-card">
+              <span class="note-label">Input</span>
+              <strong>Two eBay URLs</strong>
+              <p>Side by side comparison with a single action.</p>
+            </div>
+            <div class="note-card">
+              <span class="note-label">Decision view</span>
+              <strong>One clearer pick</strong>
+              <p>See price, trust, and buyer signals in one comparison board.</p>
+            </div>
+            <div class="note-card">
+              <span class="note-label">Next step</span>
+              <strong>LLM explanation area</strong>
+              <p>A richer natural-language explanation will plug into this experience later.</p>
+            </div>
+          </div>
+        </div>
+
+        <form id="compare-form" class="control-panel" novalidate>
+          <div class="panel-topline">
+            <span id="mode-pill" class="mode-pill">Live comparison</span>
+            <span id="status-pill" class="status-pill">Ready</span>
+          </div>
+
+          <div class="field-block">
+            <label for="url-a">Listing A URL</label>
+            <input
+              id="url-a"
+              name="url-a"
+              type="url"
+              inputmode="url"
+              autocomplete="off"
+              placeholder="https://www.ebay.com.sg/itm/..."
+              required
+            />
+          </div>
+
+          <div class="field-block">
+            <label for="url-b">Listing B URL</label>
+            <input
+              id="url-b"
+              name="url-b"
+              type="url"
+              inputmode="url"
+              autocomplete="off"
+              placeholder="https://www.ebay.com.sg/itm/..."
+              required
+            />
+          </div>
+
+          <div class="button-row">
+            <button id="compare-button" class="primary-button" type="submit">
+              Compare listings
+            </button>
+            <button id="swap-button" class="secondary-button" type="button">Swap</button>
+            <button id="demo-button" class="ghost-button" type="button">Load demo pair</button>
+          </div>
+
+          <section id="waiting-panel" class="waiting-panel" hidden aria-live="polite">
+            <div class="waiting-head">
+              <span class="waiting-kicker">Working on it</span>
+              <span class="waiting-pulse"></span>
+            </div>
+            <h3 id="waiting-title" class="waiting-title">Reading both listings</h3>
+            <p id="waiting-copy" class="waiting-copy">
+              Pulling price, seller, and buyer signals for both options.
+            </p>
+            <div id="waiting-steps" class="waiting-steps"></div>
+          </section>
+
+          <p id="form-message" class="form-message">
+            Enter two eBay URLs to compare them side by side.
+          </p>
+        </form>
+      </section>
+
+      <section class="results-shell" id="results-shell">
+        <div class="section-heading" data-animate>
+          <div>
+            <p class="eyebrow">Comparison board</p>
+            <h2>Your result</h2>
+          </div>
+          <p id="results-caption" class="section-caption">
+            Run a comparison to see the stronger buy, how close the decision is, and what
+            each listing is doing well or poorly.
+          </p>
+        </div>
+
+        <div class="summary-layout">
+          <article id="verdict-card" class="verdict-card" data-animate>
+            <p class="empty-title">Waiting for a comparison</p>
+            <p class="empty-copy">
+              Once you submit two URLs, this panel will summarize which listing looks like
+              the stronger buy and why.
+            </p>
+          </article>
+
+          <article id="llm-card" class="llm-card" data-animate>
+            <span class="summary-label">LLM explanation</span>
+            <h3 class="llm-title">Reserved for the final narrative</h3>
+            <p class="llm-copy">
+              A later version will turn the comparison into a short buyer-facing explanation
+              covering trade-offs, confidence, and what to watch before buying.
+            </p>
+          </article>
+        </div>
+
+        <div id="listing-grid" class="listing-grid">
+          <article class="placeholder-card" data-animate>
+            <p class="placeholder-label">Listing A</p>
+            <h3>Comparison card</h3>
+            <p>Price, seller trust, and buyer signal cards will appear here.</p>
+          </article>
+          <article class="placeholder-card" data-animate>
+            <p class="placeholder-label">Listing B</p>
+            <h3>Comparison card</h3>
+            <p>The second card mirrors the same structure for an easier side by side read.</p>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

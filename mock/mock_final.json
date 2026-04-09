@@ -1,0 +1,44 @@
+{
+  "listing_a": {
+    "source_url": "https://www.ebay.com.sg/itm/206158794969",
+    "title": "Apple AirPods Pro (2nd generation) with MagSafe Charging Case",
+    "total_price": 289.9,
+    "total_price_currency": "SGD",
+    "peer_price": 319.0,
+    "price_gap_vs_peer": 0.0912,
+    "good_value_probability": 0.74,
+    "prediction": "good_value",
+    "prediction_reason": "bayesian_probability",
+    "trust_probability": 0.93,
+    "ewom_score_0_to_100": 82.4,
+    "seller_feedback_review_count": 10,
+    "retrieval_status": "usable",
+    "retrieved_neighbor_count": 5,
+    "peer_price_source": "retrieval"
+  },
+  "listing_b": {
+    "source_url": "https://www.ebay.com.sg/p/4062765295?iid=377055098797",
+    "title": "Apple AirPods Pro 2nd Gen listing with light cosmetic wear",
+    "total_price": 329.0,
+    "total_price_currency": "SGD",
+    "peer_price": 318.0,
+    "price_gap_vs_peer": -0.0346,
+    "good_value_probability": 0.49,
+    "prediction": "not_good_value",
+    "prediction_reason": "bayesian_probability",
+    "trust_probability": 0.87,
+    "ewom_score_0_to_100": 71.6,
+    "seller_feedback_review_count": 8,
+    "retrieval_status": "usable",
+    "retrieved_neighbor_count": 5,
+    "peer_price_source": "retrieval"
+  },
+  "comparison": {
+    "verdict": "better_A",
+    "good_value_probability_delta": 0.25,
+    "tie_margin_used": 0.03,
+    "reasons": [
+      "Listing A has the higher good-value probability (0.7400 vs 0.4900)."
+    ]
+  }
+}

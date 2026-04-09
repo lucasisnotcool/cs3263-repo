@@ -1,13 +1,45 @@
 import argparse
 import json
+import os
 import sys
-from pathlib import Path
 from dataclasses import asdict
+from pathlib import Path
+from typing import Any
 
 # Allow direct execution via `python scripts/run_normalization.py`.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def load_project_env(env_path: Path | None = None) -> list[str]:
+    resolved_env_path = env_path or (PROJECT_ROOT / ".env")
+    if not resolved_env_path.exists():
+        return []
+
+    loaded_keys: list[str] = []
+    for raw_line in resolved_env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key.startswith("export "):
+            key = key.removeprefix("export ").strip()
+        if not key:
+            continue
+        if value and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        if key not in os.environ:
+            os.environ[key] = value
+            loaded_keys.append(key)
+
+    return loaded_keys
+
+
+LOADED_PROJECT_ENV_KEYS = load_project_env()
 
 from infrastructure.external_clients.ebay.ebay_auth_client import EbayAuthClient
 from infrastructure.external_clients.ebay.ebay_browse_client import EbayBrowseClient
@@ -322,6 +354,103 @@ def print_separator():
     print("\n" + "=" * 80 + "\n")
 
 
+def _create_runtime_context(
+    *,
+    auth_client: EbayAuthClient | None = None,
+) -> tuple[NormalizationService, EbayBrowseClient, EbayFeedbackClient, EbayUrlParser]:
+    resolved_auth_client = auth_client or EbayAuthClient(scopes=AUTH_SCOPES)
+    access_token = resolved_auth_client.get_access_token()
+
+    browse_client = EbayBrowseClient(access_token=access_token, marketplace_id="EBAY_SG")
+    feedback_client = EbayFeedbackClient(access_token=access_token)
+    url_parser = EbayUrlParser()
+
+    normalization_service = NormalizationService(
+        marketplace_client=browse_client,
+        url_parser=url_parser,
+        feedback_client=feedback_client,
+        seller_feedback_limit=SELLER_FEEDBACK_LIMIT,
+    )
+    return normalization_service, browse_client, feedback_client, url_parser
+
+
+def _build_ewom_model_paths_from_overrides(
+    *,
+    helpfulness_model_path: str | None = None,
+    helpfulness_feature_builder_path: str | None = None,
+    sentiment_model_path: str | None = None,
+    sentiment_feature_builder_path: str | None = None,
+) -> dict[str, str] | None:
+    overrides = {
+        "helpfulness_model_path": helpfulness_model_path,
+        "helpfulness_feature_builder_path": helpfulness_feature_builder_path,
+        "sentiment_model_path": sentiment_model_path,
+        "sentiment_feature_builder_path": sentiment_feature_builder_path,
+    }
+    resolved = {key: value for key, value in overrides.items() if value}
+    return resolved or None
+
+
+def compare_urls(
+    urls: list[str],
+    *,
+    summary: bool = True,
+    peer_price: float | None = None,
+    worth_buying_model_path: str | Path | None = None,
+    top_k_neighbors: int | None = None,
+    helpfulness_model_path: str | None = None,
+    helpfulness_feature_builder_path: str | None = None,
+    sentiment_model_path: str | None = None,
+    sentiment_feature_builder_path: str | None = None,
+    exclude_shipping: bool = False,
+    use_converted_usd: bool = False,
+    retrieval_candidate_pool_size: int = 500,
+    min_peer_price_ratio: float = 0.18,
+    min_peer_neighbors: int = 3,
+) -> dict[str, Any]:
+    resolved_urls = [str(url or "").strip() for url in urls if str(url or "").strip()]
+    if len(resolved_urls) != 2:
+        raise ValueError("compare_urls requires exactly two non-empty URLs.")
+
+    normalization_service, _, _, _ = _create_runtime_context()
+    ewom_model_paths = _build_ewom_model_paths_from_overrides(
+        helpfulness_model_path=helpfulness_model_path,
+        helpfulness_feature_builder_path=helpfulness_feature_builder_path,
+        sentiment_model_path=sentiment_model_path,
+        sentiment_feature_builder_path=sentiment_feature_builder_path,
+    )
+
+    scored_results = []
+    for url in resolved_urls:
+        candidate = normalization_service.normalize(url)
+        scored_results.append(
+            score_ebay_candidate_value(
+                candidate,
+                peer_price=peer_price,
+                worth_buying_model_path=worth_buying_model_path,
+                top_k_neighbors=top_k_neighbors,
+                ewom_model_paths=ewom_model_paths,
+                include_shipping_in_total=not exclude_shipping,
+                prefer_converted_usd=use_converted_usd,
+                retrieval_candidate_pool_size=retrieval_candidate_pool_size,
+                min_peer_price_ratio=min_peer_price_ratio,
+                min_peer_neighbor_count=min_peer_neighbors,
+            )
+        )
+
+    comparison_payload = compare_ebay_candidate_value_results(
+        scored_results[0],
+        scored_results[1],
+    )
+    if not summary:
+        comparison_payload = {
+            "listing_a_result": scored_results[0],
+            "listing_b_result": scored_results[1],
+            **comparison_payload,
+        }
+    return comparison_payload
+
+
 def main():
     args = parse_args()
     if args.summary and not (args.score_bayesian or args.k_values):
@@ -340,17 +469,8 @@ def main():
         print_json(build_response_snapshot(auth_client.request_access_token()))
         return
 
-    access_token = auth_client.get_access_token()
-
-    browse_client = EbayBrowseClient(access_token=access_token, marketplace_id="EBAY_SG")
-    feedback_client = EbayFeedbackClient(access_token=access_token)
-    url_parser = EbayUrlParser()
-
-    normalization_service = NormalizationService(
-        marketplace_client=browse_client,
-        url_parser=url_parser,
-        feedback_client=feedback_client,
-        seller_feedback_limit=SELLER_FEEDBACK_LIMIT,
+    normalization_service, browse_client, feedback_client, url_parser = _create_runtime_context(
+        auth_client=auth_client,
     )
 
     if args.raw:
@@ -447,14 +567,12 @@ def main():
 
 
 def _resolve_ewom_model_paths(args) -> dict[str, str] | None:
-    overrides = {
-        "helpfulness_model_path": args.helpfulness_model_path,
-        "helpfulness_feature_builder_path": args.helpfulness_feature_builder_path,
-        "sentiment_model_path": args.sentiment_model_path,
-        "sentiment_feature_builder_path": args.sentiment_feature_builder_path,
-    }
-    resolved = {key: value for key, value in overrides.items() if value}
-    return resolved or None
+    return _build_ewom_model_paths_from_overrides(
+        helpfulness_model_path=args.helpfulness_model_path,
+        helpfulness_feature_builder_path=args.helpfulness_feature_builder_path,
+        sentiment_model_path=args.sentiment_model_path,
+        sentiment_feature_builder_path=args.sentiment_feature_builder_path,
+    )
 
 
 def _parse_k_values(raw_value: str) -> list[int]:

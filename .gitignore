@@ -27,3 +27,5 @@ data/helpfulness/*.json
 models/**/*.joblib
 models/**/*.json
 __MACOSX/
+
+.env

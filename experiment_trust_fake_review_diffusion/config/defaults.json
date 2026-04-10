@@ -1,0 +1,12 @@
+{
+  "phase_a_target_rows": 240,
+  "test_size": 0.25,
+  "random_state": 42,
+  "diffusion_steps": 50,
+  "latent_dim": 192,
+  "max_features": 20000,
+  "min_df": 2,
+  "denoiser_samples_per_row": 8,
+  "classifier_samples_per_row": 4,
+  "inference_samples": 32
+}

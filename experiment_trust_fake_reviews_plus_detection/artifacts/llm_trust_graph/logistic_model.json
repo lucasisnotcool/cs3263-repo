@@ -1,0 +1,29 @@
+{
+  "feature_columns": [
+    "claim_trust_score",
+    "signal_trust_score",
+    "heuristic_pressure_score",
+    "competence_score",
+    "benevolence_score",
+    "integrity_score",
+    "predictability_score"
+  ],
+  "coef": [
+    [
+      0.3040340846352303,
+      -0.28018581294285694,
+      0.6789268145323678,
+      -0.4333922121215761,
+      -0.2696802432101134,
+      0.2301097275848697,
+      0.6250801146127885
+    ]
+  ],
+  "intercept": [
+    -0.2308537825126966
+  ],
+  "classes": [
+    0,
+    1
+  ]
+}

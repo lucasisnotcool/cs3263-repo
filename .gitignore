@@ -14,6 +14,22 @@ __pycache__/
 */artifacts/
 *.log
 
+# Keep deploy-ready artifacts for plus-detection experiment in git
+!experiment_trust_fake_reviews_plus_detection/artifacts/
+experiment_trust_fake_reviews_plus_detection/artifacts/*
+!experiment_trust_fake_reviews_plus_detection/artifacts/llm_trust_graph/
+experiment_trust_fake_reviews_plus_detection/artifacts/llm_trust_graph/*
+!experiment_trust_fake_reviews_plus_detection/artifacts/llm_trust_graph/.gitkeep
+!experiment_trust_fake_reviews_plus_detection/artifacts/llm_trust_graph/graph_model.json
+!experiment_trust_fake_reviews_plus_detection/artifacts/llm_trust_graph/logistic_model.json
+!experiment_trust_fake_reviews_plus_detection/artifacts/llm_trust_graph/graph_model_with_diffusion.json
+!experiment_trust_fake_reviews_plus_detection/artifacts/llm_trust_graph/logistic_model_with_diffusion.json
+!experiment_trust_fake_reviews_plus_detection/artifacts/llm_trust_graph/diffusion_fork_model.joblib
+!experiment_trust_fake_reviews_plus_detection/artifacts/diffusion_plus_detection/
+experiment_trust_fake_reviews_plus_detection/artifacts/diffusion_plus_detection/*
+!experiment_trust_fake_reviews_plus_detection/artifacts/diffusion_plus_detection/.gitkeep
+!experiment_trust_fake_reviews_plus_detection/artifacts/diffusion_plus_detection/diffusion_model_bundle.joblib
+
 # Raw datasets
 data/raw/
 data/

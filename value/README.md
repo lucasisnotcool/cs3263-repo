@@ -719,6 +719,7 @@ python scripts/run_normalization.py \
 python scripts/run_normalization.py \
   --url "https://www.ebay.com.sg/itm/206158794969" \
   --score-bayesian \
+  --bayesian-network-path value/artifacts/amazon_bayesian_value_electronics.json \
   --worth-buying-model-path value/artifacts/amazon_worth_buying_quick.joblib \
   --use-converted-usd \
   --retrieval-candidate-pool-size 500 \
@@ -859,6 +860,7 @@ Full validation run:
 python -m value.run_combined_value_model \
   --model-path value/artifacts/amazon_worth_buying_electronics_tfidf.joblib \
   --input-path data/value/electronics_split/electronics_products_val.jsonl \
+  --bayesian-network-path value/artifacts/amazon_bayesian_value_electronics.json \
   --output-path value/artifacts/amazon_combined_validation_scores.csv
 ```
 
@@ -883,7 +885,47 @@ python -m value.run_combined_value_model \
   --max-rows 200
 ```
 
-## 6. Practical Workflow
+## 6. Bayesian Training Data
+
+The hand-authored Bayesian model can now be fitted from weakly labeled Amazon
+Electronics rows. The dataset builder:
+
+- keeps priced `device` rows
+- applies a stricter actual-electronics filter to remove obvious accessories
+- scores rows with a trained `worth_buying` retrieval model to get `peer_price`
+- writes binary `good_value_label` rows from confident retrieval verdicts
+
+Create a labeled training JSONL:
+
+```bash
+python -m value.bayesian_training_data \
+  --input-path data/value/electronics_split/electronics_products_train_devices_only.jsonl \
+  --worth-buying-model-path value/artifacts/amazon_worth_buying_devices_full.joblib \
+  --output-path data/value/bayesian_training/amazon_electronics_bayesian_train.jsonl
+```
+
+Train a Bayesian CPT artifact from that JSONL:
+
+```bash
+python -m value.train_bayesian_value_model \
+  --dataset-path data/value/bayesian_training/amazon_electronics_bayesian_train.jsonl \
+  --output-path value/artifacts/amazon_bayesian_value_electronics.json
+```
+
+The trained artifact can be loaded with
+`value.train_bayesian_value_model.load_bayesian_value_network(...)` and passed
+into `score_good_value_probability(..., network=trained_network)`.
+
+It can also be used from the Bayesian CLI:
+
+```bash
+python -m value.run_bayesian_value_model \
+  --input ./bayesian_value_input.json \
+  --network-path value/artifacts/amazon_bayesian_value_electronics.json \
+  --pretty
+```
+
+## 7. Practical Workflow
 
 ### Recommended End-To-End Workflow
 
@@ -921,7 +963,7 @@ python -m value.run_combined_value_model \
   --max-rows 50
 ```
 
-## 7. What Is Learned And What Is Heuristic?
+## 8. What Is Learned And What Is Heuristic?
 
 This is important for interpreting results correctly.
 
@@ -930,6 +972,8 @@ This is important for interpreting results correctly.
 - TF-IDF vocabularies and weights
 - nearest-neighbor index over priced train products
 - the implied market context given by retrieved neighbors
+- Bayesian CPT priors/posteriors when `train_bayesian_value_model` is run on
+  labeled training rows
 
 ### Hand-Authored / Heuristic
 
@@ -938,15 +982,15 @@ This is important for interpreting results correctly.
 - `worth_buying_score` equations and thresholds
 - Bayesian evidence bucket thresholds
 - Bayesian network structure
-- Bayesian CPT generation formulas
+- Bayesian CPT generation formulas when using the default unfitted model
 - combined prediction thresholding
 
-## 8. Limitations
+## 9. Limitations
 
 - The `worth_buying` model is not yet supervised against a gold `good value`
   label, so its final score is heuristic even though the representation is learned.
-- The Bayesian model is also not fitted from ground-truth labels; its CPTs are
-  manually constructed.
+- The Bayesian training path learns from weak labels produced by the
+  retrieval/heuristic value scorer, not from human ground-truth purchase labels.
 - The combined pipeline therefore improves structure and interpretability, but it
   is still not a fully label-calibrated end-to-end predictor.
 - Service terms such as warranty and return window are currently absent from the
@@ -955,7 +999,7 @@ This is important for interpreting results correctly.
 - The prepared split derives trust/eWOM proxy signals from review aggregates.
   Those are useful operational features, but they are still approximations.
 
-## 9. Testing
+## 10. Testing
 
 Core tests:
 
@@ -964,7 +1008,8 @@ python -m unittest \
   tests.test_electronics_splits \
   tests.test_worth_buying \
   tests.test_combined_value \
-  tests.test_bayesian_value
+  tests.test_bayesian_value \
+  tests.test_bayesian_training
 ```
 
 These cover:
@@ -973,3 +1018,4 @@ These cover:
 - worth-buying train and score flow
 - combined retrieval + Bayesian flow
 - Bayesian probability sanity checks
+- Bayesian training data export and CPT artifact loading

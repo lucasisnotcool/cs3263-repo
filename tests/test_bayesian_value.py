@@ -142,7 +142,7 @@ class BayesianValueModelTests(unittest.TestCase):
         self.assertEqual(extracted["ewom_score_0_to_100"], 62.0)
         self.assertEqual(extracted["ewom_magnitude_0_to_100"], 47.0)
 
-    def test_extract_review_set_agent_signals_does_not_assume_perfect_trust_on_fallback(self) -> None:
+    def test_extract_review_set_agent_signals_defaults_missing_trust_to_zero(self) -> None:
         ewom_result = {
             "review_count": 2,
             "reviews": [
@@ -175,7 +175,41 @@ class BayesianValueModelTests(unittest.TestCase):
 
         extracted = extract_ewom_bayesian_signals(ewom_result)
 
-        self.assertIsNone(extracted["trust_probability"])
+        self.assertEqual(extracted["trust_probability"], 0.0)
+
+    def test_extract_review_set_agent_signals_defaults_missing_ewom_score_to_zero(self) -> None:
+        ewom_result = {
+            "review_count": 1,
+            "aggregate": {
+                "mean_deception_probability": 0.20,
+                "final_ewom_score_0_to_100": None,
+                "final_ewom_magnitude_0_to_100": 18.0,
+            },
+        }
+
+        extracted = extract_ewom_bayesian_signals(ewom_result)
+
+        self.assertAlmostEqual(extracted["trust_probability"], 0.80)
+        self.assertEqual(extracted["ewom_score_0_to_100"], 0.0)
+        self.assertEqual(extracted["ewom_magnitude_0_to_100"], 18.0)
+
+    def test_extract_single_review_agent_signals_defaults_missing_trust_and_ewom_score_to_zero(self) -> None:
+        ewom_result = {
+            "deception": {
+                "trust_probability": None,
+                "deception_probability": None,
+            },
+            "fusion": {
+                "ewom_score_0_to_100": None,
+                "ewom_magnitude_0_to_100": 12.0,
+            },
+        }
+
+        extracted = extract_ewom_bayesian_signals(ewom_result)
+
+        self.assertEqual(extracted["trust_probability"], 0.0)
+        self.assertEqual(extracted["ewom_score_0_to_100"], 0.0)
+        self.assertEqual(extracted["ewom_magnitude_0_to_100"], 12.0)
 
     def test_fuse_ewom_result_into_bayesian_input_preserves_non_agent_fields(self) -> None:
         base_input = BayesianValueInput(

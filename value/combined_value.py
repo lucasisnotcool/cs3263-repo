@@ -6,7 +6,9 @@ from typing import Any
 
 import pandas as pd
 
+from .bayes import DiscreteBayesianNetwork
 from .bayesian_value import BayesianValueInput, score_good_value_probability
+from .train_bayesian_value_model import load_bayesian_value_network
 from .worth_buying import (
     WorthBuyingConfig,
     load_model as load_worth_buying_model,
@@ -23,6 +25,8 @@ def score_combined_value_split(
     max_rows: int | None = None,
     probability_threshold: float = 0.50,
     min_confidence_for_prediction: float | None = None,
+    bayesian_network: DiscreteBayesianNetwork | None = None,
+    bayesian_network_path: str | Path | None = None,
 ) -> dict[str, Any]:
     if not 0.0 <= probability_threshold <= 1.0:
         raise ValueError("probability_threshold must be between 0 and 1.")
@@ -36,6 +40,10 @@ def score_combined_value_split(
     )
     if not 0.0 <= confidence_threshold <= 1.0:
         raise ValueError("min_confidence_for_prediction must be between 0 and 1.")
+    resolved_bayesian_network, resolved_bayesian_network_path = _resolve_bayesian_network(
+        bayesian_network=bayesian_network,
+        bayesian_network_path=bayesian_network_path,
+    )
 
     catalog = load_prepared_catalog(split_path, max_rows=max_rows).reset_index(drop=True)
     retrieval_scored = score_worth_buying_catalog(
@@ -47,6 +55,7 @@ def score_combined_value_split(
         retrieval_scored=retrieval_scored,
         probability_threshold=probability_threshold,
         confidence_threshold=confidence_threshold,
+        bayesian_network=resolved_bayesian_network,
     )
 
     resolved_output_path: Path | None = None
@@ -62,6 +71,7 @@ def score_combined_value_split(
         "rows_scored": int(len(combined_scored)),
         "probability_threshold": float(probability_threshold),
         "min_confidence_for_prediction": float(confidence_threshold),
+        "bayesian_network_path": resolved_bayesian_network_path,
         "prediction_counts": {
             prediction: int(count)
             for prediction, count in combined_scored["combined_prediction"]
@@ -84,6 +94,7 @@ def _build_combined_predictions(
     retrieval_scored: pd.DataFrame,
     probability_threshold: float,
     confidence_threshold: float,
+    bayesian_network: DiscreteBayesianNetwork | None,
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for _, retrieval_row in retrieval_scored.iterrows():
@@ -102,7 +113,10 @@ def _build_combined_predictions(
             warranty_months=_to_optional_float(source_row.get("warranty_months")),
             return_window_days=_to_optional_float(source_row.get("return_window_days")),
         )
-        bayesian_result = score_good_value_probability(bayesian_input)
+        bayesian_result = score_good_value_probability(
+            bayesian_input,
+            network=bayesian_network,
+        )
         combined_probability = float(bayesian_result["good_value_probability"])
         retrieval_confidence = float(retrieval_row["confidence_score"])
         combined_prediction = _resolve_combined_prediction(
@@ -174,6 +188,23 @@ def _resolve_combined_prediction(
     if probability >= probability_threshold:
         return "good_value"
     return "not_good_value"
+
+
+def _resolve_bayesian_network(
+    *,
+    bayesian_network: DiscreteBayesianNetwork | None,
+    bayesian_network_path: str | Path | None,
+) -> tuple[DiscreteBayesianNetwork | None, str | None]:
+    if bayesian_network is not None and bayesian_network_path is not None:
+        raise ValueError(
+            "Provide at most one of bayesian_network or bayesian_network_path."
+        )
+    if bayesian_network is not None:
+        return bayesian_network, None
+    if bayesian_network_path is None:
+        return None, None
+    resolved_path = str(Path(bayesian_network_path).expanduser().resolve())
+    return load_bayesian_value_network(resolved_path), resolved_path
 
 
 def _to_optional_float(value: Any) -> float | None:

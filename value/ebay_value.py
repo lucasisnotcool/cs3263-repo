@@ -11,12 +11,14 @@ import pandas as pd
 from core.entities.candidate import Candidate
 from eWOM.api import EWOMModelPaths, score_review_set
 
+from .bayes import DiscreteBayesianNetwork
 from .bayesian_value import (
     BayesianValueInput,
     fuse_ewom_result_into_bayesian_input,
     score_good_value_probability,
 )
 from .listing_kind import infer_listing_kind_from_parts
+from .train_bayesian_value_model import load_bayesian_value_network
 from .worth_buying import inspect_worth_buying_catalog_neighbors
 
 SUFFICIENT_RETRIEVAL_STATUSES = {"usable"}
@@ -358,6 +360,8 @@ def score_ebay_candidate_value(
     *,
     peer_price: float | None = None,
     worth_buying_model_path: str | Path | None = None,
+    bayesian_network: DiscreteBayesianNetwork | None = None,
+    bayesian_network_path: str | Path | None = None,
     top_k_neighbors: int | None = None,
     ewom_result: Mapping[str, Any] | None = None,
     ewom_model_paths: EWOMModelPaths | Mapping[str, Any] | None = None,
@@ -368,6 +372,10 @@ def score_ebay_candidate_value(
     min_peer_neighbor_count: int = MIN_PEER_NEIGHBOR_COUNT,
 ) -> dict[str, Any]:
     resolved_candidate = _coerce_candidate(candidate)
+    resolved_bayesian_network, resolved_bayesian_network_path = _resolve_bayesian_network(
+        bayesian_network=bayesian_network,
+        bayesian_network_path=bayesian_network_path,
+    )
     peer_price_source = "manual" if peer_price is not None else "none"
     default_relative_price_bucket: str | None = None
     price_considered = peer_price is not None
@@ -445,9 +453,12 @@ def score_ebay_candidate_value(
 
     bayesian_result = score_good_value_probability(
         base_input,
+        network=resolved_bayesian_network,
         default_relative_price_bucket=default_relative_price_bucket,
     )
     bayesian_result["resolved_input"] = asdict(base_input)
+    if resolved_bayesian_network_path is not None:
+        bayesian_result["bayesian_network_path"] = resolved_bayesian_network_path
     if fused_agent_signals is not None:
         bayesian_result["fused_agent_signals"] = fused_agent_signals
     decision = _build_ebay_value_decision(
@@ -913,11 +924,36 @@ def _score_neutral_price_probability_from_result(result: Mapping[str, Any]) -> f
         return None
     neutral_input = dict(resolved_input)
     neutral_input["peer_price"] = None
+    bayesian_network_path = bayesian_result.get("bayesian_network_path")
+    resolved_bayesian_network, _ = _resolve_bayesian_network(
+        bayesian_network=None,
+        bayesian_network_path=(
+            bayesian_network_path if isinstance(bayesian_network_path, (str, Path)) else None
+        ),
+    )
     rescored = score_good_value_probability(
         BayesianValueInput.from_mapping(neutral_input),
+        network=resolved_bayesian_network,
         default_relative_price_bucket=NEUTRAL_PRICE_BUCKET,
     )
     return _to_optional_float(rescored.get("good_value_probability"))
+
+
+def _resolve_bayesian_network(
+    *,
+    bayesian_network: DiscreteBayesianNetwork | None,
+    bayesian_network_path: str | Path | None,
+) -> tuple[DiscreteBayesianNetwork | None, str | None]:
+    if bayesian_network is not None and bayesian_network_path is not None:
+        raise ValueError(
+            "Provide at most one of bayesian_network or bayesian_network_path."
+        )
+    if bayesian_network is not None:
+        return bayesian_network, None
+    if bayesian_network_path is None:
+        return None, None
+    resolved_path = str(Path(bayesian_network_path).expanduser().resolve())
+    return load_bayesian_value_network(resolved_path), resolved_path
 
 
 def resolve_candidate_total_price(

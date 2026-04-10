@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
+import shutil
 import unittest
 from unittest.mock import patch
+import uuid
+from pathlib import Path
 
 from core.entities.candidate import Candidate
+from value.train_bayesian_value_model import train_bayesian_value_network
 from value.ebay_value import (
     _build_candidate_retrieval_title,
     _is_accessory_like_text,
@@ -16,6 +21,14 @@ from value.ebay_value import (
     summarize_ebay_candidate_value_result,
     sweep_candidate_market_context_k,
 )
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            json.dump(row, handle)
+            handle.write("\n")
 
 
 class EbayValueBridgeTests(unittest.TestCase):
@@ -136,6 +149,88 @@ class EbayValueBridgeTests(unittest.TestCase):
 
         self.assertEqual(result["bayesian_result"]["resolved_input"]["trust_probability"], 0.0)
         self.assertEqual(result["bayesian_result"]["resolved_input"]["ewom_score_0_to_100"], 0.0)
+
+    def test_score_ebay_candidate_value_can_use_trained_bayesian_network_path(self) -> None:
+        tmpdir = Path("data") / "test_artifacts" / f"ebay_value_bayes_{uuid.uuid4().hex}"
+        tmpdir.mkdir(parents=True, exist_ok=True)
+        try:
+            bayesian_dataset_path = tmpdir / "bayesian_train.jsonl"
+            bayesian_network_path = tmpdir / "trained_bayes.json"
+            _write_jsonl(
+                bayesian_dataset_path,
+                [
+                    {
+                        "good_value_label": "yes",
+                        "bayesian_evidence": {
+                            "TrustSignal": "very_high",
+                            "ReviewPolarity": "very_positive",
+                            "ReviewStrength": "strong",
+                            "RatingSignal": "high",
+                            "ReviewVolume": "high",
+                            "VerifiedSignal": "high",
+                            "RelativePriceBucket": "much_cheaper",
+                        },
+                    },
+                    {
+                        "good_value_label": "no",
+                        "bayesian_evidence": {
+                            "TrustSignal": "low",
+                            "ReviewPolarity": "negative",
+                            "ReviewStrength": "medium",
+                            "RatingSignal": "low",
+                            "ReviewVolume": "medium",
+                            "VerifiedSignal": "low",
+                            "RelativePriceBucket": "much_pricier",
+                        },
+                    },
+                ],
+            )
+            train_bayesian_value_network(
+                dataset_path=bayesian_dataset_path,
+                output_path=bayesian_network_path,
+                smoothing=0.25,
+            )
+
+            candidate = Candidate(
+                source_url="https://www.ebay.com.sg/itm/123",
+                page_type="listing",
+                title="Wireless Earbuds",
+                price={"value": "79.0", "currency": "SGD"},
+                product_rating_count=320,
+                product_average_rating=4.5,
+                seller_feedback_texts=[
+                    "Fast shipping and great communication.",
+                    "Arrived exactly as described.",
+                ],
+            )
+            result = score_ebay_candidate_value(
+                candidate,
+                peer_price=99.0,
+                ewom_result={
+                    "review_count": 2,
+                    "aggregate": {
+                        "mean_deception_probability": 0.10,
+                        "final_ewom_score_0_to_100": 72.0,
+                        "final_ewom_magnitude_0_to_100": 61.0,
+                    },
+                },
+                bayesian_network_path=bayesian_network_path,
+            )
+
+            self.assertEqual(
+                result["bayesian_result"]["bayesian_network_path"],
+                str(bayesian_network_path.resolve()),
+            )
+            self.assertGreaterEqual(
+                result["bayesian_result"]["good_value_probability"],
+                0.0,
+            )
+            self.assertLessEqual(
+                result["bayesian_result"]["good_value_probability"],
+                1.0,
+            )
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     def test_score_ebay_candidate_value_can_prefer_converted_usd_prices(self) -> None:
         candidate = Candidate(

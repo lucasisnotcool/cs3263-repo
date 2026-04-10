@@ -16,6 +16,7 @@ from value.bayesian_value import (
     fuse_ewom_result_into_bayesian_input,
     score_good_value_probability,
 )
+from value.train_bayesian_value_model import load_bayesian_value_network
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,6 +46,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--ewom-mock-case-id",
         type=str,
         help="Case ID inside --ewom-mock-json to score before Bayesian inference.",
+    )
+    parser.add_argument(
+        "--network-path",
+        type=str,
+        help="Optional trained Bayesian network JSON artifact to use instead of the default CPTs.",
     )
     parser.add_argument(
         "--helpfulness-model-path",
@@ -85,8 +91,11 @@ def main() -> None:
             ewom_result,
         )
 
-    result = score_good_value_probability(bayesian_input)
+    network = _load_bayesian_network(args.network_path)
+    result = score_good_value_probability(bayesian_input, network=network)
     result["resolved_input"] = asdict(bayesian_input)
+    if args.network_path:
+        result["bayesian_network_path"] = str(Path(args.network_path).expanduser().resolve())
     if fused_agent_signals is not None:
         result["fused_agent_signals"] = fused_agent_signals
 
@@ -128,6 +137,12 @@ def _resolve_ewom_result(args: argparse.Namespace) -> dict[str, Any] | None:
     if args.ewom_mock_json and args.ewom_mock_case_id:
         return _score_ewom_mock_case(args)
     return None
+
+
+def _load_bayesian_network(network_path: str | None):
+    if not network_path:
+        return None
+    return load_bayesian_value_network(network_path)
 
 
 def _score_ewom_mock_case(args: argparse.Namespace) -> dict[str, Any]:

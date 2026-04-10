@@ -189,6 +189,15 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--bayesian-network-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional trained Bayesian network JSON artifact to use instead of the "
+            "default hand-authored CPTs."
+        ),
+    )
+    parser.add_argument(
         "--helpfulness-model-path",
         default=None,
         help="Optional override for the helpfulness model artifact path.",
@@ -407,6 +416,7 @@ def compare_urls(
     retrieval_candidate_pool_size: int = 500,
     min_peer_price_ratio: float = 0.18,
     min_peer_neighbors: int = 3,
+    bayesian_network_path: str | Path | None = None,
 ) -> dict[str, Any]:
     resolved_urls = [str(url or "").strip() for url in urls if str(url or "").strip()]
     if len(resolved_urls) != 2:
@@ -435,6 +445,7 @@ def compare_urls(
                 retrieval_candidate_pool_size=retrieval_candidate_pool_size,
                 min_peer_price_ratio=min_peer_price_ratio,
                 min_peer_neighbor_count=min_peer_neighbors,
+                bayesian_network_path=bayesian_network_path,
             )
         )
 
@@ -496,6 +507,7 @@ def main():
                     retrieval_candidate_pool_size=args.retrieval_candidate_pool_size,
                     min_peer_price_ratio=args.min_peer_price_ratio,
                     min_peer_neighbor_count=args.min_peer_neighbors,
+                    bayesian_network_path=args.bayesian_network_path,
                 )
             )
         comparison_payload = compare_ebay_candidate_value_results(
@@ -528,6 +540,7 @@ def main():
                 retrieval_candidate_pool_size=args.retrieval_candidate_pool_size,
                 min_peer_price_ratio=args.min_peer_price_ratio,
                 min_peer_neighbor_count=args.min_peer_neighbors,
+                bayesian_network_path=args.bayesian_network_path,
             )
             plot_path = write_candidate_k_sweep_plot(
                 k_sweep_result,

@@ -94,6 +94,7 @@ class NormalizationService(Normalizer):
 
         returns_info = item.get("returnTerms") or item.get("returns") or item.get("returnPolicy")
         seller_id = seller.get("username") or seller.get("sellerId") or seller.get("userId")
+        item_specifics = self._extract_item_specifics(item)
 
         return Candidate(
             source_url=source_url,
@@ -113,8 +114,16 @@ class NormalizationService(Normalizer):
             product_rating_count=review_count,
             product_rating_histogram=histogram,
             product_average_rating=avg_rating,
+            listing_bullet_points=self._extract_listing_bullet_points(
+                item,
+                item_specifics=item_specifics,
+            ),
+            listing_description=self._extract_listing_description(
+                item,
+                item_specifics=item_specifics,
+            ),
             seller_feedback_texts=self._fetch_seller_feedback_texts(seller_id),
-            item_specifics=self._extract_item_specifics(item),
+            item_specifics=item_specifics,
             product_family_key=self._build_product_family_key(item, parsed_url),
         )
 
@@ -287,6 +296,104 @@ class NormalizationService(Normalizer):
                     result[name] = values
 
         return result or None
+
+    def _extract_listing_bullet_points(
+        self,
+        item: Dict[str, Any],
+        *,
+        item_specifics: Optional[Dict[str, Any]] = None,
+    ) -> Optional[List[str]]:
+        bullets: List[str] = []
+
+        for key in ("shortDescription", "subtitle"):
+            raw_value = item.get(key)
+            if isinstance(raw_value, str) and raw_value.strip():
+                bullets.append(raw_value.strip())
+
+        specifics = item_specifics or self._extract_item_specifics(item) or {}
+        for name, raw_value in specifics.items():
+            values = raw_value if isinstance(raw_value, list) else [raw_value]
+            cleaned_values = [
+                str(value).strip()
+                for value in values
+                if value is not None and str(value).strip()
+            ]
+            if not cleaned_values:
+                continue
+            bullets.append(f"{str(name).strip()}: {', '.join(cleaned_values)}")
+
+        deduped: List[str] = []
+        seen = set()
+        for bullet in bullets:
+            normalized = re.sub(r"\s+", " ", bullet).strip()
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(normalized)
+
+        return deduped[:10] or None
+
+    def _extract_listing_description(
+        self,
+        item: Dict[str, Any],
+        *,
+        item_specifics: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        text_parts: List[str] = []
+        product = item.get("product")
+
+        for container in (item, product if isinstance(product, dict) else None):
+            if not isinstance(container, dict):
+                continue
+            for key in (
+                "description",
+                "shortDescription",
+                "longDescription",
+                "subtitle",
+                "productDescription",
+            ):
+                raw_value = container.get(key)
+                if isinstance(raw_value, str) and raw_value.strip():
+                    text_parts.append(raw_value.strip())
+
+        if not text_parts:
+            specifics = item_specifics or self._extract_item_specifics(item) or {}
+            summary_parts: List[str] = []
+            for name, raw_value in specifics.items():
+                values = raw_value if isinstance(raw_value, list) else [raw_value]
+                cleaned_values = [
+                    str(value).strip()
+                    for value in values
+                    if value is not None and str(value).strip()
+                ]
+                if not cleaned_values:
+                    continue
+                summary_parts.append(f"{str(name).strip()}: {', '.join(cleaned_values)}")
+                if len(summary_parts) >= 6:
+                    break
+            if summary_parts:
+                text_parts.append("Key listing details: " + "; ".join(summary_parts))
+
+        condition = item.get("condition")
+        if isinstance(condition, str) and condition.strip():
+            text_parts.append(f"Condition: {condition.strip()}")
+
+        cleaned_parts: List[str] = []
+        seen = set()
+        for part in text_parts:
+            normalized = re.sub(r"\s+", " ", part).strip()
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned_parts.append(normalized)
+
+        return " ".join(cleaned_parts) or None
 
     def _build_product_family_key(self, item: Dict[str, Any], parsed_url: ParsedEbayUrl) -> Optional[str]:
         product_id = self._extract_product_id(item, parsed_url)

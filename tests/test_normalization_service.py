@@ -121,6 +121,8 @@ def test_candidate_output_dict_has_fixed_schema():
         "product_rating_count",
         "product_rating_histogram",
         "product_average_rating",
+        "listing_bullet_points",
+        "listing_description",
         "seller_feedback_texts",
         "item_specifics",
         "product_family_key",
@@ -128,6 +130,8 @@ def test_candidate_output_dict_has_fixed_schema():
     assert output["price"] is None
     assert output["shipping"] == []
     assert output["returns"] is None
+    assert output["listing_bullet_points"] is None
+    assert output["listing_description"] == "Condition: New"
     assert output["seller_feedback_texts"] is None
     assert output["product_rating_count"] is None
     assert output["product_rating_histogram"] is None
@@ -209,3 +213,5 @@ def test_normalize_falls_back_to_item_group_for_variation_listing():
     assert candidate.title == "JFJ Easy Pro Compatible Buffing Pad/s (JFJ EasyPro) - 2 Pads"
     assert candidate.price == {"value": "9.99", "currency": "GBP"}
     assert candidate.item_specifics == {"MPN": "2 Pads", "Brand": "JFJ"}
+    assert candidate.listing_bullet_points == ["MPN: 2 Pads", "Brand: JFJ"]
+    assert "Key listing details:" in candidate.listing_description

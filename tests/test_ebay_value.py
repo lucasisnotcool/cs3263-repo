@@ -18,6 +18,24 @@ from value.ebay_value import (
 )
 
 
+def _listing_trust_stub(trust_probability: float = 0.84) -> dict[str, float | str | None]:
+    graph_trust_probability = max(0.0, trust_probability - 0.03)
+    return {
+        "status": "ok",
+        "source": "experiment_trust_fake_reviews",
+        "trust_probability": trust_probability,
+        "trust_probability_graph": graph_trust_probability,
+        "trust_probability_logistic": trust_probability,
+        "deception_probability": 1.0 - trust_probability,
+        "deception_probability_graph": 1.0 - graph_trust_probability,
+        "deception_probability_logistic": 1.0 - trust_probability,
+        "score_head": "logistic",
+        "graph_uncertainty_entropy": 0.22,
+        "overall_confidence": 0.78,
+        "error": None,
+    }
+
+
 class EbayValueBridgeTests(unittest.TestCase):
     def test_build_bayesian_input_from_candidate_parses_price_shipping_and_policy_fields(self) -> None:
         candidate = Candidate(
@@ -69,6 +87,7 @@ class EbayValueBridgeTests(unittest.TestCase):
         result = score_ebay_candidate_value(
             candidate,
             peer_price=99.0,
+            listing_trust_result=_listing_trust_stub(0.81),
             ewom_result=ewom_result,
         )
 
@@ -77,8 +96,9 @@ class EbayValueBridgeTests(unittest.TestCase):
         self.assertEqual(result["ewom_result"]["aggregate"]["final_ewom_score_0_to_100"], 72.0)
         self.assertAlmostEqual(
             bayesian_result["resolved_input"]["trust_probability"],
-            0.9,
+            0.81,
         )
+        self.assertEqual(result["listing_trust_result"]["trust_probability"], 0.81)
         self.assertEqual(bayesian_result["resolved_input"]["ewom_score_0_to_100"], 72.0)
         self.assertEqual(
             bayesian_result["resolved_input"]["ewom_magnitude_0_to_100"],
@@ -104,6 +124,7 @@ class EbayValueBridgeTests(unittest.TestCase):
         result = score_ebay_candidate_value(
             candidate,
             peer_price=99.0,
+            listing_trust_result=_listing_trust_stub(),
             ewom_result={
                 "review_count": 1,
                 "aggregate": {
@@ -147,6 +168,7 @@ class EbayValueBridgeTests(unittest.TestCase):
         result = score_ebay_candidate_value(
             candidate,
             peer_price=120.0,
+            listing_trust_result=_listing_trust_stub(),
             ewom_result={
                 "review_count": 1,
                 "aggregate": {
@@ -191,6 +213,7 @@ class EbayValueBridgeTests(unittest.TestCase):
         result = score_ebay_candidate_value(
             candidate,
             worth_buying_model_path="value/artifacts/amazon_worth_buying_quick.joblib",
+            listing_trust_result=_listing_trust_stub(),
             ewom_result={
                 "review_count": 2,
                 "aggregate": {
@@ -577,6 +600,7 @@ class EbayValueBridgeTests(unittest.TestCase):
             "pricing": {
                 "total_price_currency": "USD",
             },
+            "listing_trust_result": _listing_trust_stub(0.81),
             "bayesian_result": {
                 "good_value_probability": 0.73,
                 "derived_metrics": {
@@ -606,6 +630,12 @@ class EbayValueBridgeTests(unittest.TestCase):
         self.assertEqual(summary["prediction"], "good_value")
         self.assertEqual(summary["prediction_reason"], None)
         self.assertEqual(summary["trust_probability"], 0.81)
+        self.assertEqual(summary["listing_trust_score_head"], "logistic")
+        self.assertEqual(summary["listing_trust_probability_graph"], 0.78)
+        self.assertEqual(summary["listing_trust_probability_logistic"], 0.81)
+        self.assertAlmostEqual(summary["listing_deception_probability"], 0.19)
+        self.assertAlmostEqual(summary["listing_deception_probability_graph"], 0.22)
+        self.assertAlmostEqual(summary["listing_deception_probability_logistic"], 0.19)
         self.assertEqual(summary["ewom_score_0_to_100"], 66.0)
         self.assertEqual(summary["seller_feedback_review_count"], 8)
         self.assertIsNone(summary["retrieval_status"])

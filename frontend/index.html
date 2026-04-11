@@ -6,7 +6,7 @@
     <title>eBay Listing Comparator</title>
     <meta
       name="description"
-      content="Compare two eBay listings side by side and get a cleaner buying recommendation."
+      content="Compare two eBay listings side by side and get a clearer buying recommendation."
     />
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -21,26 +21,26 @@
           <p class="eyebrow">eBay comparison</p>
           <h1>Paste two listings. See which one deserves your money.</h1>
           <p class="hero-text">
-            Compare two options side by side, check the price gap against the market, and
-            land on a faster buying decision without digging through every listing detail
-            yourself.
+            Compare two options side by side, check how each one sits against the market,
+            and get a cleaner final recommendation without manually piecing everything
+            together yourself.
           </p>
 
           <div class="hero-notes">
             <div class="note-card">
-              <span class="note-label">Input</span>
-              <strong>Two eBay URLs</strong>
-              <p>Side by side comparison with a single action.</p>
+              <span class="note-label">Fast start</span>
+              <strong>Just two listing links</strong>
+              <p>Drop in both URLs and get one side by side decision board.</p>
             </div>
             <div class="note-card">
-              <span class="note-label">Decision view</span>
+              <span class="note-label">Decision board</span>
               <strong>One clearer pick</strong>
-              <p>See price, trust, and buyer signals in one comparison board.</p>
+              <p>See price, listing trust, and review signals in a single final view.</p>
             </div>
             <div class="note-card">
-              <span class="note-label">Next step</span>
-              <strong>LLM explanation area</strong>
-              <p>A richer natural-language explanation will plug into this experience later.</p>
+              <span class="note-label">Buying guide</span>
+              <strong>Full explanation</strong>
+              <p>The final recommendation expands into a longer, easier-to-read guide.</p>
             </div>
           </div>
         </div>
@@ -115,7 +115,7 @@
           </p>
         </div>
 
-        <div class="summary-layout">
+        <section class="decision-stage">
           <article id="verdict-card" class="verdict-card" data-animate>
             <p class="empty-title">Waiting for a comparison</p>
             <p class="empty-copy">
@@ -123,22 +123,13 @@
               the stronger buy and why.
             </p>
           </article>
-
-          <article id="llm-card" class="llm-card" data-animate>
-            <span class="summary-label">LLM explanation</span>
-            <h3 class="llm-title">Reserved for the final narrative</h3>
-            <p class="llm-copy">
-              A later version will turn the comparison into a short buyer-facing explanation
-              covering trade-offs, confidence, and what to watch before buying.
-            </p>
-          </article>
-        </div>
+        </section>
 
         <div id="listing-grid" class="listing-grid">
           <article class="placeholder-card" data-animate>
             <p class="placeholder-label">Listing A</p>
             <h3>Comparison card</h3>
-            <p>Price, seller trust, and buyer signal cards will appear here.</p>
+            <p>Price, listing trust, and review signal cards will appear here.</p>
           </article>
           <article class="placeholder-card" data-animate>
             <p class="placeholder-label">Listing B</p>
@@ -146,6 +137,22 @@
             <p>The second card mirrors the same structure for an easier side by side read.</p>
           </article>
         </div>
+
+        <section class="story-stage">
+          <article id="llm-card" class="llm-card" data-animate>
+            <div class="llm-header">
+              <div>
+                <span class="summary-label">Decision guide</span>
+                <h3 class="llm-title">The detailed buying guide will appear here</h3>
+                <p class="llm-copy">
+                  Once the comparison finishes, this section will expand the final recommendation
+                  into a fuller explanation with the main trade-offs and the last things worth checking.
+                </p>
+              </div>
+              <span class="story-pill">Waiting</span>
+            </div>
+          </article>
+        </section>
       </section>
     </main>
 

@@ -21,6 +21,8 @@ class Candidate:
     product_rating_count: Optional[int] = None
     product_rating_histogram: Optional[List[Dict[str, Any]]] = None
     product_average_rating: Optional[float] = None
+    listing_bullet_points: Optional[List[str]] = None
+    listing_description: Optional[str] = None
     seller_feedback_texts: Optional[List[str]] = None
     item_specifics: Optional[Dict[str, Any]] = None
     product_family_key: Optional[str] = None
@@ -44,6 +46,8 @@ class Candidate:
             "product_rating_count": self.product_rating_count,
             "product_rating_histogram": self.product_rating_histogram,
             "product_average_rating": self.product_average_rating,
+            "listing_bullet_points": self.listing_bullet_points,
+            "listing_description": self.listing_description,
             "seller_feedback_texts": self.seller_feedback_texts,
             "item_specifics": self.item_specifics,
             "product_family_key": self.product_family_key,

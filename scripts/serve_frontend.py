@@ -18,6 +18,11 @@ FRONTEND_ROOT = PROJECT_ROOT / "frontend"
 MODEL_PATH = PROJECT_ROOT / "value" / "artifacts" / "amazon_worth_buying_devices_full.joblib"
 
 from scripts.run_normalization import compare_urls, load_project_env
+from value.decision_explainer import (
+    build_ollama_runtime_status,
+    resolve_decision_explanation,
+)
+from value.listing_trust import build_listing_trust_runtime_status
 
 
 load_project_env()
@@ -53,6 +58,8 @@ def build_runtime_health() -> dict[str, object]:
     client_id_set = bool(os.getenv("EBAY_CLIENT_ID", "").strip())
     client_secret_set = bool(os.getenv("EBAY_CLIENT_SECRET", "").strip())
     model_exists = MODEL_PATH.exists()
+    listing_trust = build_listing_trust_runtime_status()
+    llm_explanation = build_ollama_runtime_status()
 
     missing: list[str] = []
     if not env_path.exists():
@@ -63,6 +70,8 @@ def build_runtime_health() -> dict[str, object]:
         missing.append("EBAY_CLIENT_SECRET")
     if not model_exists:
         missing.append("worth-buying model artifact")
+    if not listing_trust["ready"]:
+        missing.append("listing-trust pipeline")
 
     return {
         "ready": not missing,
@@ -76,6 +85,8 @@ def build_runtime_health() -> dict[str, object]:
         "client_secret_set": client_secret_set,
         "worth_buying_model_path": str(MODEL_PATH),
         "worth_buying_model_exists": model_exists,
+        "listing_trust": listing_trust,
+        "llm_explanation": llm_explanation,
         "compare_defaults": {
             "summary": True,
             "exclude_shipping": True,
@@ -150,10 +161,16 @@ class FrontendRequestHandler(BaseHTTPRequestHandler):
             return
 
         if isinstance(result, dict):
+            result["llm_explanation"] = resolve_decision_explanation(
+                result,
+                runtime_status=health.get("llm_explanation"),
+            )
             result["_meta"] = {
                 "pipeline_mode": "direct_function",
                 "entrypoint": "scripts.run_normalization.compare_urls",
                 "compare_defaults": health["compare_defaults"],
+                "llm_explanation_provider": "ollama",
+                "llm_explanation_model": result["llm_explanation"].get("model"),
             }
         self._send_json(result)
 

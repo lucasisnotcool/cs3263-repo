@@ -123,6 +123,8 @@ def extract_ewom_bayesian_signals(ewom_payload: Mapping[str, Any]) -> dict[str, 
 def fuse_ewom_result_into_bayesian_input(
     base_input: BayesianValueInput | Mapping[str, Any] | None,
     ewom_payload: Mapping[str, Any],
+    *,
+    include_trust_probability: bool = True,
 ) -> tuple[BayesianValueInput, dict[str, Any]]:
     resolved_base_input = (
         BayesianValueInput()
@@ -136,9 +138,13 @@ def fuse_ewom_result_into_bayesian_input(
     ewom_signals = extract_ewom_bayesian_signals(ewom_payload)
 
     fused_input = BayesianValueInput(
-        trust_probability=_prefer_non_null(
-            ewom_signals.get("trust_probability"),
-            resolved_base_input.trust_probability,
+        trust_probability=(
+            _prefer_non_null(
+                ewom_signals.get("trust_probability"),
+                resolved_base_input.trust_probability,
+            )
+            if include_trust_probability
+            else resolved_base_input.trust_probability
         ),
         ewom_score_0_to_100=_prefer_non_null(
             ewom_signals.get("ewom_score_0_to_100"),

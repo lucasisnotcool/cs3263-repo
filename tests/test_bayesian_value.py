@@ -208,6 +208,32 @@ class BayesianValueModelTests(unittest.TestCase):
         self.assertEqual(fused_input.peer_price, 99.0)
         self.assertEqual(extracted["source_type"], "review_set")
 
+    def test_fuse_ewom_result_can_preserve_existing_listing_trust(self) -> None:
+        base_input = BayesianValueInput(
+            trust_probability=0.91,
+            price=79.0,
+            peer_price=99.0,
+        )
+        ewom_result = {
+            "review_count": 2,
+            "aggregate": {
+                "mean_deception_probability": 0.35,
+                "final_ewom_score_0_to_100": 68.0,
+                "final_ewom_magnitude_0_to_100": 41.0,
+            },
+        }
+
+        fused_input, extracted = fuse_ewom_result_into_bayesian_input(
+            base_input,
+            ewom_result,
+            include_trust_probability=False,
+        )
+
+        self.assertAlmostEqual(fused_input.trust_probability, 0.91)
+        self.assertEqual(fused_input.ewom_score_0_to_100, 68.0)
+        self.assertEqual(fused_input.ewom_magnitude_0_to_100, 41.0)
+        self.assertAlmostEqual(extracted["trust_probability"], 0.65)
+
 
 if __name__ == "__main__":
     unittest.main()

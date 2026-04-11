@@ -22,6 +22,11 @@ from .ebay_value import (
     sweep_candidate_market_context_k,
     write_candidate_k_sweep_plot,
 )
+from .listing_trust import (
+    build_candidate_listing_payload,
+    build_listing_trust_runtime_status,
+    score_candidate_listing_trust,
+)
 from .worth_buying import (
     WorthBuyingConfig,
     load_model as load_worth_buying_model,
@@ -39,6 +44,8 @@ __all__ = [
     "WorthBuyingConfig",
     "build_value_evidence",
     "build_bayesian_input_from_candidate",
+    "build_candidate_listing_payload",
+    "build_listing_trust_runtime_status",
     "build_worth_buying_query_row",
     "compare_listings",
     "default_bayesian_value_network",
@@ -49,6 +56,7 @@ __all__ = [
     "load_worth_buying_model",
     "resolve_candidate_total_price",
     "score_combined_value_split",
+    "score_candidate_listing_trust",
     "score_ebay_candidate_value",
     "score_worth_buying_split",
     "score_worth_buying_catalog",

@@ -17,6 +17,7 @@ from .bayesian_value import (
     score_good_value_probability,
 )
 from .listing_kind import infer_listing_kind_from_parts
+from .listing_trust import score_candidate_listing_trust
 from .worth_buying import inspect_worth_buying_catalog_neighbors
 
 SUFFICIENT_RETRIEVAL_STATUSES = {"usable"}
@@ -359,6 +360,7 @@ def score_ebay_candidate_value(
     peer_price: float | None = None,
     worth_buying_model_path: str | Path | None = None,
     top_k_neighbors: int | None = None,
+    listing_trust_result: Mapping[str, Any] | None = None,
     ewom_result: Mapping[str, Any] | None = None,
     ewom_model_paths: EWOMModelPaths | Mapping[str, Any] | None = None,
     include_shipping_in_total: bool = True,
@@ -414,6 +416,31 @@ def score_ebay_candidate_value(
                 "price advantage."
             )
 
+    resolved_listing_trust_result: dict[str, Any] | None = None
+    if listing_trust_result is not None:
+        resolved_listing_trust_result = _to_builtin(dict(listing_trust_result))
+    else:
+        resolved_listing_trust_result = score_candidate_listing_trust(resolved_candidate)
+
+    listing_trust_probability = None
+    if isinstance(resolved_listing_trust_result, Mapping):
+        listing_trust_probability = _to_optional_float(
+            resolved_listing_trust_result.get("trust_probability")
+        )
+    if listing_trust_probability is not None:
+        base_input = BayesianValueInput(
+            trust_probability=listing_trust_probability,
+            ewom_score_0_to_100=base_input.ewom_score_0_to_100,
+            ewom_magnitude_0_to_100=base_input.ewom_magnitude_0_to_100,
+            average_rating=base_input.average_rating,
+            rating_count=base_input.rating_count,
+            verified_purchase_rate=base_input.verified_purchase_rate,
+            price=base_input.price,
+            peer_price=base_input.peer_price,
+            warranty_months=base_input.warranty_months,
+            return_window_days=base_input.return_window_days,
+        )
+
     resolved_ewom_result: dict[str, Any] | None = None
     fused_agent_signals: dict[str, Any] | None = None
     if ewom_result is not None:
@@ -428,6 +455,7 @@ def score_ebay_candidate_value(
         base_input, fused_agent_signals = fuse_ewom_result_into_bayesian_input(
             base_input,
             resolved_ewom_result,
+            include_trust_probability=False,
         )
 
     bayesian_result = score_good_value_probability(
@@ -450,6 +478,7 @@ def score_ebay_candidate_value(
     return {
         "candidate": resolved_candidate.to_output_dict(),
         "market_context": market_context,
+        "listing_trust_result": resolved_listing_trust_result,
         "ewom_result": resolved_ewom_result,
         "bayesian_result": _to_builtin(bayesian_result),
         "decision": decision,
@@ -473,6 +502,7 @@ def sweep_candidate_market_context_k(
     *,
     model_path: str | Path,
     k_values: list[int] | tuple[int, ...],
+    listing_trust_result: Mapping[str, Any] | None = None,
     ewom_result: Mapping[str, Any] | None = None,
     ewom_model_paths: EWOMModelPaths | Mapping[str, Any] | None = None,
     include_shipping_in_total: bool = True,
@@ -492,6 +522,11 @@ def sweep_candidate_market_context_k(
             resolved_candidate.seller_feedback_texts,
             model_paths=ewom_model_paths,
         )
+    resolved_listing_trust_result: dict[str, Any] | None = None
+    if listing_trust_result is not None:
+        resolved_listing_trust_result = _to_builtin(dict(listing_trust_result))
+    else:
+        resolved_listing_trust_result = score_candidate_listing_trust(resolved_candidate)
 
     sweep_rows: list[dict[str, Any]] = []
     for k in normalized_k_values:
@@ -513,6 +548,7 @@ def sweep_candidate_market_context_k(
             bayesian_result = score_ebay_candidate_value(
                 resolved_candidate,
                 peer_price=peer_price,
+                listing_trust_result=resolved_listing_trust_result,
                 ewom_result=resolved_ewom_result,
                 include_shipping_in_total=include_shipping_in_total,
                 prefer_converted_usd=prefer_converted_usd,
@@ -553,6 +589,7 @@ def sweep_candidate_market_context_k(
 
     return {
         "candidate": resolved_candidate.to_output_dict(),
+        "listing_trust_result": resolved_listing_trust_result,
         "ewom_result": resolved_ewom_result,
         "k_sweep": sweep_rows,
         "pricing": {
@@ -744,6 +781,10 @@ def summarize_ebay_candidate_value_result(
     fused_agent_signals = (
         fused_agent_signals if isinstance(fused_agent_signals, Mapping) else {}
     )
+    listing_trust_result = result.get("listing_trust_result")
+    listing_trust_result = (
+        listing_trust_result if isinstance(listing_trust_result, Mapping) else {}
+    )
     probability = _to_optional_float(bayesian_result.get("good_value_probability"))
     decision = result.get("decision")
     decision = decision if isinstance(decision, Mapping) else {}
@@ -770,6 +811,21 @@ def summarize_ebay_candidate_value_result(
         ),
         "prediction_reason": decision.get("reason"),
         "trust_probability": resolved_input.get("trust_probability"),
+        "listing_trust_status": listing_trust_result.get("status"),
+        "listing_trust_score_head": listing_trust_result.get("score_head"),
+        "listing_trust_probability_graph": listing_trust_result.get(
+            "trust_probability_graph"
+        ),
+        "listing_trust_probability_logistic": listing_trust_result.get(
+            "trust_probability_logistic"
+        ),
+        "listing_deception_probability": listing_trust_result.get("deception_probability"),
+        "listing_deception_probability_graph": listing_trust_result.get(
+            "deception_probability_graph"
+        ),
+        "listing_deception_probability_logistic": listing_trust_result.get(
+            "deception_probability_logistic"
+        ),
         "ewom_score_0_to_100": resolved_input.get("ewom_score_0_to_100"),
         "seller_feedback_review_count": fused_agent_signals.get("review_count"),
         "retrieval_status": (
@@ -980,6 +1036,8 @@ def _coerce_candidate(candidate: Candidate | Mapping[str, Any]) -> Candidate:
         product_rating_count=_int_or_none(candidate.get("product_rating_count")),
         product_rating_histogram=_list_of_mappings(candidate.get("product_rating_histogram")),
         product_average_rating=_to_optional_float(candidate.get("product_average_rating")),
+        listing_bullet_points=_list_of_strings(candidate.get("listing_bullet_points")),
+        listing_description=_string_or_none(candidate.get("listing_description")),
         seller_feedback_texts=_list_of_strings(candidate.get("seller_feedback_texts")),
         item_specifics=_mapping_or_none(candidate.get("item_specifics")),
         product_family_key=_string_or_none(candidate.get("product_family_key")),

@@ -1,6 +1,6 @@
 const DEFAULT_URLS = [
   "https://www.ebay.com.sg/itm/206158794969",
-  "https://www.ebay.com.sg/itm/197809836976",
+  "https://www.ebay.com.sg/itm/236047233833",
 ];
 
 const WAITING_STAGES = [
@@ -10,9 +10,9 @@ const WAITING_STAGES = [
     copy: "Confirming the item titles, seller details, and current asking prices.",
   },
   {
-    label: "Seller trust",
-    title: "Checking seller trust",
-    copy: "Looking through seller reputation signals and recent buyer feedback.",
+    label: "Listing trust",
+    title: "Checking listing trust",
+    copy: "Scoring the listing content for deception risk while the review branch is processed separately.",
   },
   {
     label: "Market value",
@@ -23,6 +23,11 @@ const WAITING_STAGES = [
     label: "Decision",
     title: "Preparing the recommendation",
     copy: "Pulling the comparison into a cleaner side by side decision view.",
+  },
+  {
+    label: "Decision guide",
+    title: "Preparing the final explanation",
+    copy: "Turning the result into a fuller buying guide with the trade-offs and checks that matter most.",
   },
 ];
 
@@ -89,11 +94,7 @@ function renderHealth(health) {
   setStatus(compareReady ? "Ready" : "Offline", compareReady ? "success" : "error");
 
   if (!isLoading) {
-    setMessage(
-      compareReady
-        ? "Paste two eBay links to compare them side by side."
-        : "Comparison is temporarily unavailable. Please try again later."
-    );
+    setMessage(compareReady ? buildReadyMessage(health) : "Comparison is temporarily unavailable. Please try again later.");
   }
 
   syncControls();
@@ -259,15 +260,45 @@ function renderLoadingVerdict(stage) {
 function renderLoadingLlm() {
   elements.llmCard.innerHTML = `
     <div class="loading-card">
-      <span class="summary-label">LLM explanation</span>
-      <h3 class="llm-title">Space reserved for the final narrative</h3>
-      <p class="llm-copy">
-        This panel will later turn the result into a short natural-language explanation.
-      </p>
-      <div class="llm-placeholder-lines">
-        <div class="placeholder-line"></div>
-        <div class="placeholder-line"></div>
-        <div class="placeholder-line short"></div>
+      <div class="llm-header">
+        <div>
+          <span class="summary-label">Decision guide</span>
+          <h3 class="llm-title">Building the detailed explanation</h3>
+          <p class="llm-copy">
+            Expanding the recommendation into a clearer read on the trade-offs, the safer choice, and what still deserves a manual check.
+          </p>
+        </div>
+        <span class="story-pill">In progress</span>
+      </div>
+      <div class="llm-layout">
+        <div class="llm-story-grid">
+          <div class="llm-paragraph">
+            <div class="llm-placeholder-lines">
+              <div class="placeholder-line"></div>
+              <div class="placeholder-line"></div>
+              <div class="placeholder-line"></div>
+              <div class="placeholder-line short"></div>
+            </div>
+          </div>
+          <div class="llm-paragraph">
+            <div class="llm-placeholder-lines">
+              <div class="placeholder-line"></div>
+              <div class="placeholder-line"></div>
+              <div class="placeholder-line"></div>
+              <div class="placeholder-line short"></div>
+            </div>
+          </div>
+        </div>
+        <aside class="llm-side-panel">
+          <div class="llm-side-card">
+            <span class="summary-label">Before you buy</span>
+            <div class="llm-placeholder-lines">
+              <div class="placeholder-line"></div>
+              <div class="placeholder-line"></div>
+              <div class="placeholder-line short"></div>
+            </div>
+          </div>
+        </aside>
       </div>
     </div>
   `;
@@ -341,7 +372,7 @@ function renderComparison(result, submittedUrls) {
 
   elements.resultsCaption.textContent = buildResultsCaption(listingA, listingB, comparison);
   elements.verdictCard.innerHTML = renderVerdictCard(listingA, listingB, comparison, delta);
-  elements.llmCard.innerHTML = renderLlmCard();
+  elements.llmCard.innerHTML = renderLlmCard(result.llm_explanation, comparison);
   elements.listingGrid.innerHTML = [
     renderListingCard(listingA, "Listing A", comparison.verdict === "better_A"),
     renderListingCard(listingB, "Listing B", comparison.verdict === "better_B"),
@@ -359,7 +390,7 @@ function renderFailure(payload) {
     <h3 class="verdict-title">We could not finish the comparison</h3>
     <p class="verdict-copy">${escapeHtml(message)}</p>
   `;
-  elements.llmCard.innerHTML = renderLlmCard(true);
+  elements.llmCard.innerHTML = renderLlmCard(null, {}, true);
   elements.listingGrid.innerHTML = [
     renderFailureListingCard("Listing A"),
     renderFailureListingCard("Listing B"),
@@ -379,15 +410,25 @@ function renderFailureListingCard(label) {
 function renderVerdictCard(listingA, listingB, comparison, delta) {
   const verdict = describeVerdict(comparison.verdict, listingA, listingB);
   const reasons = Array.isArray(comparison.reasons) ? comparison.reasons : [];
+  const winnerLabel = resolveWinnerLabel(comparison.verdict);
+  const verdictTone = resolveVerdictTone(comparison.verdict);
 
   return `
-    <span class="summary-label">Recommendation</span>
-    <h3 class="verdict-title">${escapeHtml(verdict.title)}</h3>
-    <p class="verdict-copy">${escapeHtml(verdict.copy)}</p>
+    <div class="verdict-top">
+      <div>
+        <span class="summary-label">Final recommendation</span>
+        <h3 class="verdict-title">${escapeHtml(verdict.title)}</h3>
+        <p class="verdict-copy">${escapeHtml(verdict.copy)}</p>
+      </div>
+      <div class="verdict-mark" data-tone="${escapeAttribute(verdictTone)}">
+        <span class="verdict-mark-label">Best read right now</span>
+        <strong>${escapeHtml(winnerLabel)}</strong>
+      </div>
+    </div>
     <div class="summary-band">
       <div class="summary-block">
         <span class="summary-label">Recommended pick</span>
-        <strong>${escapeHtml(resolveWinnerLabel(comparison.verdict))}</strong>
+        <strong>${escapeHtml(winnerLabel)}</strong>
       </div>
       <div class="summary-block">
         <span class="summary-label">Head to head edge</span>
@@ -405,23 +446,110 @@ function renderVerdictCard(listingA, listingB, comparison, delta) {
   `;
 }
 
-function renderLlmCard(showErrorState = false) {
+function renderLlmCard(explanation, comparison = {}, showErrorState = false) {
+  const paragraphs = Array.isArray(explanation && explanation.paragraphs)
+    ? explanation.paragraphs.filter((paragraph) => String(paragraph || "").trim())
+    : [];
+  const watchouts = Array.isArray(explanation && explanation.watchouts)
+    ? explanation.watchouts.filter((item) => String(item || "").trim())
+    : [];
+  const status = explanation && explanation.status ? explanation.status : "pending";
+  const title =
+    explanation && explanation.title
+      ? explanation.title
+      : showErrorState
+        ? "The detailed explanation is unavailable for this run"
+        : "The detailed buying guide will appear here";
+  const lead =
+    explanation && explanation.lead
+      ? explanation.lead
+      : showErrorState
+        ? "Run a successful comparison first and this guide will fill in automatically."
+        : "Once the comparison finishes, this section will expand the recommendation into a fuller buyer-facing guide.";
+  const note = resolveExplanationNote(status, comparison, showErrorState);
+  const storyLabel = resolveExplanationLabel(status, showErrorState);
+  const watchoutTitle = comparison && comparison.verdict === "better_A"
+    ? "What to double-check on Listing A"
+    : comparison && comparison.verdict === "better_B"
+      ? "What to double-check on Listing B"
+      : "What to double-check";
+
+  if (!paragraphs.length) {
+    return `
+      <div class="llm-header">
+        <div>
+          <span class="summary-label">Decision guide</span>
+          <h3 class="llm-title">${escapeHtml(title)}</h3>
+          <p class="llm-copy">${escapeHtml(lead)}</p>
+        </div>
+        <span class="story-pill">${escapeHtml(storyLabel)}</span>
+      </div>
+      <div class="llm-layout">
+        <div class="llm-story-grid">
+          <div class="llm-paragraph">
+            <div class="llm-placeholder-lines">
+              <div class="placeholder-line"></div>
+              <div class="placeholder-line"></div>
+              <div class="placeholder-line"></div>
+              <div class="placeholder-line short"></div>
+            </div>
+          </div>
+          <div class="llm-paragraph">
+            <div class="llm-placeholder-lines">
+              <div class="placeholder-line"></div>
+              <div class="placeholder-line"></div>
+              <div class="placeholder-line"></div>
+              <div class="placeholder-line short"></div>
+            </div>
+          </div>
+        </div>
+        <aside class="llm-side-panel">
+          <div class="llm-side-card">
+            <span class="summary-label">What to expect</span>
+            <p class="llm-note">${escapeHtml(lead)}</p>
+          </div>
+        </aside>
+      </div>
+    `;
+  }
+
   return `
-    <span class="summary-label">LLM explanation</span>
-    <h3 class="llm-title">${escapeHtml(
-      showErrorState ? "Explanation space is still reserved" : "Reserved for the final narrative"
-    )}</h3>
-    <p class="llm-copy">
-      ${escapeHtml(
-        showErrorState
-          ? "Once the comparison runs successfully, this area can later hold a polished natural-language explanation."
-          : "A later version will turn this comparison into a short buyer-facing explanation covering trade-offs, confidence, and what to watch before buying."
-      )}
-    </p>
-    <div class="llm-placeholder-lines">
-      <div class="placeholder-line"></div>
-      <div class="placeholder-line"></div>
-      <div class="placeholder-line short"></div>
+    <div class="llm-header">
+      <div>
+        <span class="summary-label">Decision guide</span>
+        <h3 class="llm-title">${escapeHtml(title)}</h3>
+        <p class="llm-copy">${escapeHtml(lead)}</p>
+      </div>
+      <span class="story-pill">${escapeHtml(storyLabel)}</span>
+    </div>
+    <div class="llm-layout">
+      <div class="llm-story-grid">
+        ${paragraphs.map((paragraph) => `<p class="llm-paragraph">${escapeHtml(paragraph)}</p>`).join("")}
+      </div>
+      <aside class="llm-side-panel">
+        ${
+          watchouts.length
+            ? `
+          <div class="llm-side-card llm-watchouts">
+            <span class="summary-label">${escapeHtml(watchoutTitle)}</span>
+            <ul class="llm-watchout-list">
+              ${watchouts.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+            </ul>
+          </div>
+        `
+            : ""
+        }
+        ${
+          note
+            ? `
+          <div class="llm-side-card">
+            <span class="summary-label">Keep in mind</span>
+            <p class="llm-note">${escapeHtml(note)}</p>
+          </div>
+        `
+            : ""
+        }
+      </aside>
     </div>
   `;
 }
@@ -431,12 +559,18 @@ function renderListingCard(listing, label, isHighlighted) {
   const trustProbability = clampPercent(Number(listing.trust_probability || 0) * 100);
   const ewomScore = clampPercent(Number(listing.ewom_score_0_to_100 || 0));
   const predictionTone = resolvePredictionTone(listing.prediction);
+  const recommendationBadge = isHighlighted
+    ? `<span class="listing-mark">Recommended</span>`
+    : "";
 
   return `
     <article class="listing-card" data-animate data-highlight="${String(isHighlighted)}">
       <div class="listing-header">
         <div>
-          <span class="listing-label">${escapeHtml(label)}${isHighlighted ? " / recommended" : ""}</span>
+          <div class="listing-label-row">
+            <span class="listing-label">${escapeHtml(label)}</span>
+            ${recommendationBadge}
+          </div>
           <h3>${escapeHtml(listing.title || label)}</h3>
           <a class="listing-link" href="${escapeAttribute(listing.source_url || "#")}" target="_blank" rel="noreferrer">${escapeHtml(
             shortenUrl(listing.source_url)
@@ -454,7 +588,7 @@ function renderListingCard(listing, label, isHighlighted) {
         <span class="chip" data-tone="${escapeAttribute(predictionTone)}">${escapeHtml(formatPrediction(listing.prediction))}</span>
         <span class="chip" data-tone="${escapeAttribute(resolveRetrievalTone(listing.retrieval_status))}">${escapeHtml(formatRetrieval(listing.retrieval_status))}</span>
         <span class="chip">${escapeHtml(String(listing.retrieved_neighbor_count ?? 0))} market matches</span>
-        <span class="chip">${escapeHtml(String(listing.seller_feedback_review_count ?? 0))} seller comments</span>
+        <span class="chip">${escapeHtml(String(listing.seller_feedback_review_count ?? 0))} reviews analyzed</span>
       </div>
 
       <div class="metric-grid">
@@ -474,15 +608,15 @@ function renderListingCard(listing, label, isHighlighted) {
           "Positive means the listing is priced below the market read."
         )}
         ${renderMetricCard(
-          "Seller trust",
+          "Listing trust",
           formatProbability(listing.trust_probability || 0),
-          "A stronger trust read supports the recommendation.",
+          "Higher means the listing copy reads as more trustworthy.",
           trustProbability
         )}
         ${renderMetricCard(
-          "Buyer signal",
+          "Review signal",
           formatScoreOutOf100(listing.ewom_score_0_to_100),
-          "A higher score points to healthier buyer sentiment.",
+          "Higher means the review picture looks healthier.",
           ewomScore
         )}
         ${renderMetricCard(
@@ -539,7 +673,41 @@ function buildListingFooter(listing) {
   const peerStatus = formatRetrieval(listing.retrieval_status);
   const peers = String(listing.retrieved_neighbor_count ?? 0);
   const comments = String(listing.seller_feedback_review_count ?? 0);
-  return `${peerStatus}. Based on ${peers} similar listings and ${comments} seller comments.`;
+  return `${peerStatus}. Based on ${peers} similar listings and ${comments} review texts.`;
+}
+
+function buildReadyMessage(health) {
+  const listingTrust = health && health.listing_trust ? health.listing_trust : {};
+  if (listingTrust.ready) {
+    return "Paste two eBay links to compare price, listing trust, and review signals in one cleaner decision view.";
+  }
+  return "Comparison is unavailable right now. Please try again in a moment.";
+}
+
+function resolveExplanationLabel(status, showErrorState) {
+  if (showErrorState) {
+    return "Unavailable";
+  }
+  if (status === "fallback") {
+    return "Signal-based read";
+  }
+  if (status === "generated") {
+    return "Detailed guide";
+  }
+  return "Preparing";
+}
+
+function resolveExplanationNote(status, comparison, showErrorState) {
+  if (showErrorState) {
+    return "Run the comparison again once both listing links are valid.";
+  }
+  if (status === "fallback") {
+    return "This guide is based on the comparison signals alone, so use it as direction rather than a final guarantee.";
+  }
+  if (comparison && comparison.verdict === "insufficient_evidence") {
+    return "The result is still thin, so treat the recommendation as tentative and verify the listing details manually.";
+  }
+  return "";
 }
 
 function resolveErrorMessage(payload) {
@@ -615,6 +783,16 @@ function resolveDecisionFeel(verdict, delta) {
     return "Needs caution";
   }
   return delta >= 0.12 ? "Clear edge" : "Lean, not landslide";
+}
+
+function resolveVerdictTone(verdict) {
+  if (verdict === "better_A" || verdict === "better_B") {
+    return "good";
+  }
+  if (verdict === "tie") {
+    return "warn";
+  }
+  return "danger";
 }
 
 function formatPrediction(prediction) {

@@ -92,6 +92,47 @@ Base deploy artifacts written by notebook:
 - used when trust artifacts are missing but `diffusion_model_bundle.joblib` exists
 - scores raw text directly with diffusion detector
 
+## Deploy Pipeline I/O Diagram
+
+```mermaid
+graph LR
+    A["Inputs
+Python: run_deployment_pipeline(products)
+CLI: --input / --stdin / --product-json / --text
+Row fields: text OR title+bullet_points+description
+    Optional IDs: product_id, product_type_id, record_id"] --> E["Normalize products (_normalize_products)"]
+    E --> F["Label each row (Ollama) with cache
+deploy_labels.jsonl"]
+    F --> G["discretize_label_columns()"]
+
+    G --> H["Base scoring
+BN: phase_b_truth_likelihood_graph
+Logistic: phase_b_truth_likelihood_logistic
+Risk = 1 - truth prob"]
+
+    E --> I["Text embedding for diffusion fork
+TF-IDF -> SVD -> Scaler"]
+    I --> J["Diffusion fork inference
+denoiser + classifier
+-> diffusion_real_score / diffusion_fake_score / diffusion_prediction_std"]
+
+    G --> K["Augmented trust scoring inputs
+original trust features + diffusion_real_score (+ diffusion_bucket)"]
+    J --> K
+    K --> L["Diffusion-augmented scoring
+BN/logistic with diffusion factor
+-> *_with_diffusion scores"]
+
+    H --> M["Output JSON"]
+    L --> M
+
+    M["Outputs
+Top-level: schema_version, pipeline, environment, results, summary
+Result row: record_id, status, input, labels (trust mode), scores, error
+Key scores (trust): trust_risk_index_graph (+ optional _with_diffusion)
+Diffusion scores are computed from text features, not from BN base outputs"]
+```
+
 ## Trust Deploy Scores
 
 Base (always in trust mode):
